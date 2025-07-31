@@ -1,16 +1,38 @@
 <!DOCTYPE html>
 <html>
-<head><title>Kết quả</title></head>
+<head>
+    <title>Kết quả tìm kiếm</title>
+    <style>
+        .card {
+            border: 1px solid #ccc;
+            border-radius: 10px;
+            margin: 10px;
+            padding: 10px;
+            width: 300px;
+            float: left;
+        }
+        img {
+            max-width: 100%;
+            height: auto;
+        }
+    </style>
+</head>
 <body>
-  <h2>Kết quả cho: {{ query }}</h2>
-  <ul>
-    {% for item in results %}
-      <li>
-        <a href="{{ item.link }}" target="_blank">{{ item.title }}</a><br>
-        <em>{{ item.snippet }}</em>
-      </li>
-    {% endfor %}
-  </ul>
-  <a href="/">← Quay lại</a>
+    <h2>Kết quả cho: {{ query }}</h2>
+    <div>
+        {% for item in results %}
+            <div class="card">
+                <img src="{{ item.image }}" alt="Hình ảnh">
+                <h3>{{ item.title }}</h3>
+                <p><strong>Giá:</strong> {{ item.price }}</p>
+                <p><strong>Diện tích:</strong> {{ item.area }}</p>
+                <p><strong>Mô tả:</strong> {{ item.description }}</p>
+                <p><strong>Liên hệ:</strong> {{ item.phone }}</p>
+                <a href="{{ item.link }}" target="_blank">Xem chi tiết</a>
+            </div>
+        {% endfor %}
+    </div>
+    <div style="clear: both;"></div>
+    <a href="/">← Quay lại</a>
 </body>
 </html>
