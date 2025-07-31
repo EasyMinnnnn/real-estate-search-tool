@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html>
+<head><title>Kết quả</title></head>
+<body>
+  <h2>Kết quả cho: {{ query }}</h2>
+  <ul>
+    {% for item in results %}
+      <li>
+        <a href="{{ item.link }}" target="_blank">{{ item.title }}</a><br>
+        <em>{{ item.snippet }}</em>
+      </li>
+    {% endfor %}
+  </ul>
+  <a href="/">← Quay lại</a>
+</body>
+</html>
