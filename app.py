@@ -4,16 +4,14 @@ from search_google import search_google
 
 app = Flask(__name__)
 
-@app.route("/")
+@app.route("/", methods=["GET", "POST"])
 def index():
-    return render_template("index.html")
-
-@app.route("/search", methods=["POST"])
-def search():
-    query = request.form.get("query")
-    results = search_google(query)
-    return render_template("results.html", query=query, results=results)
-
+    if request.method == "POST":
+        query = request.form.get("query")
+        results = search_google(query)
+        return render_template("index.html", query=query, results=results)
+    return render_template("index.html", results=[])
+    
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))  # Lấy PORT từ biến môi trường Render
-    app.run(debug=False, host="0.0.0.0", port=port)  # PHẢI là host="0.0.0.0"
+    port = int(os.environ.get("PORT", 5000))
+    app.run(debug=False, host="0.0.0.0", port=port)
