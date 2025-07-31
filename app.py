@@ -15,5 +15,5 @@ def search():
     return render_template("results.html", query=query, results=results)
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))  # Render sẽ gán biến môi trường PORT
-    app.run(debug=False, host="0.0.0.0", port=port)  # ← PHẢI có host="0.0.0.0" và port đúng
+    port = int(os.environ.get("PORT", 5000))  # Lấy PORT từ biến môi trường Render
+    app.run(debug=False, host="0.0.0.0", port=port)  # PHẢI là host="0.0.0.0"
