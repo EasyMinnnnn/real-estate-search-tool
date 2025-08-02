@@ -1,11 +1,12 @@
 name: 🧪 Test crawler với các link cụ thể
 
 on:
-  workflow_dispatch:  # Chạy thủ công từ GitHub UI
+  workflow_dispatch:
   push:
     paths:
       - test_crawler.py
       - crawler.py
+      - crawler_playwright.py   # Thêm nếu bạn gọi file này
 
 jobs:
   run-test-crawler:
@@ -20,11 +21,14 @@ jobs:
         with:
           python-version: "3.10"
 
-      - name: 📥 Install dependencies
+      - name: 📥 Install Python dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          pip install beautifulsoup4 requests
+          pip install beautifulsoup4 requests playwright
+
+      - name: 🧱 Install Playwright browsers
+        run: playwright install chromium
 
       - name: 🧪 Run test_crawler.py
         run: python test_crawler.py
