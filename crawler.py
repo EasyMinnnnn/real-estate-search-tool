@@ -44,38 +44,36 @@ def get_domain(url: str) -> str:
     return urlparse(url).netloc.lower()
 
 def parse_batdongsan(link, soup):
-    title = soup.find("h1")
+    # Tiêu đề bài đăng
+    title_tag = soup.find("h1", class_="re__pr-title")
+    title = title_tag.get_text(strip=True) if title_tag else ""
 
-    # Tìm thông tin giá và diện tích
-    info_items = soup.find_all("div", class_="re__pr-short-info-item")
-    price = ""
-    area = ""
-    for item in info_items:
-        label = item.find("span", class_="title")
-        value = item.find("span", class_="value")
-        if label and value:
-            label_text = label.get_text(strip=True)
-            if "Mức giá" in label_text:
-                price = value.get_text(strip=True)
-            elif "Diện tích" in label_text:
-                area = value.get_text(strip=True)
+    # Mức giá và diện tích là 2 thẻ <span class="value"> liên tiếp
+    value_spans = soup.find_all("span", class_="value")
+    price = value_spans[0].get_text(strip=True) if len(value_spans) > 0 else ""
+    area = value_spans[1].get_text(strip=True) if len(value_spans) > 1 else ""
 
-    # Mô tả
-    description = soup.find("div", class_="re__section-content")
+    # Mô tả nằm trong thẻ <div> có nhiều class
+    desc_div = soup.find("div", class_="re__section-body re__detail-content js__section-body js__pr-description js__tracking")
+    description = desc_div.get_text(separator="\n", strip=True) if desc_div else ""
 
-    # Ảnh đại diện (nên dùng og:image thay vì <img>)
-    image_tag = soup.find("meta", property="og:image")
-    image = image_tag["content"] if image_tag else ""
+    # Hình ảnh đầu tiên (lấy ảnh đại diện đầu nếu có)
+    image = ""
+    img_tag = soup.find("img")
+    if img_tag and img_tag.has_attr("src"):
+        image = img_tag["src"]
 
     # Tên người liên hệ
-    contact = soup.find("div", class_="re__contact-name")
+    contact_tag = soup.find("a", class_="re__contact-name")
+    contact = contact_tag.get_text(strip=True) if contact_tag else ""
 
     return {
         "link": link,
-        "title": title.text.strip() if title else "",
+        "title": title,
         "price": price,
         "area": area,
-        "description": description.text.strip() if description else "",
+        "description": description,
         "image": image,
-        "contact": contact.text.strip() if contact else ""
+        "contact": contact
     }
+
