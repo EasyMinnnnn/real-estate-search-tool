@@ -1,5 +1,7 @@
 import os
+import re
 import requests
+from urllib.parse import urlparse, urljoin
 from bs4 import BeautifulSoup
 from crawler import extract_info_batdongsan
 
@@ -19,16 +21,40 @@ def get_top_links(query, num_links=5):
     return [item["link"] for item in data.get("items", [])]
 
 def get_sub_links(link, max_links=3):
+    """Lấy link con từ cùng domain, có path sâu hơn, chứa ID tin (prxxxxx, .htm, .html)"""
     try:
         resp = requests.get(link, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
         soup = BeautifulSoup(resp.text, "html.parser")
+        base_domain = urlparse(link).netloc
+        base_path = urlparse(link).path.rstrip("/")
+
         sub_links = []
+
         for a in soup.find_all("a", href=True):
             href = a["href"]
-            if "/ban-nha" in href and href.startswith("https://batdongsan.com.vn") and len(sub_links) < max_links:
-                sub_links.append(href)
+            full_url = urljoin(link, href)
+            parsed = urlparse(full_url)
+
+            if (
+                parsed.netloc == base_domain
+                and parsed.path.startswith(base_path)
+                and parsed.path != base_path
+                and full_url not in sub_links
+                and (
+                    "pr" in parsed.path or
+                    re.search(r"\d{6,}\.htm", parsed.path) or
+                    re.search(r"\d{6,}\.html", parsed.path)
+                )
+            ):
+                sub_links.append(full_url)
+
+            if len(sub_links) >= max_links:
+                break
+
         return sub_links
-    except:
+
+    except Exception as e:
+        print(f"⚠️ Error get_sub_links({link}): {e}")
         return []
 
 def search_google(query):
@@ -37,9 +63,12 @@ def search_google(query):
     result_links = []
 
     for idx, link in enumerate(top_links):
+        if idx >= len(distribution):
+            break
         sub_links = get_sub_links(link, max_links=distribution[idx])
         for sub in sub_links:
             info = extract_info_batdongsan(sub)
-            result_links.append(info)
+            if info:
+                result_links.append(info)
 
     return result_links
