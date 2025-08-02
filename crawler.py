@@ -1,183 +1,170 @@
-import re
-import requests
 from bs4 import BeautifulSoup
-from urllib.parse import urlparse
+from playwright.sync_api import sync_playwright
 
-def extract_info_generic(link):
-    domain = urlparse(link).netloc
+def extract_info_generic(link: str) -> dict:
+    domain = get_domain(link)
 
-    if "batdongsan.com.vn" in domain:
-        return extract_info_batdongsan(link)
-    elif "nhatot.com" in domain:
-        return extract_info_nhatot(link)
-    elif "alonhadat.com.vn" in domain:
-        return extract_info_alonhadat(link)
-    elif "guland.vn" in domain:
-        return extract_info_guland(link)
-    elif "muaban.net" in domain:
-        return extract_info_muaban(link)
-    elif "rever.vn" in domain:
-        return extract_info_rever(link)
-    elif "i-nhadat.com" in domain or "i-batdongsan.com" in domain:
-        return extract_info_ibds(link)
-    else:
-        return {
-            "link": link,
-            "title": "❓ Không hỗ trợ domain này",
-            "price": "",
-            "area": "",
-            "description": "",
-            "image": "",
-            "contact": ""
-        }
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page()
+        try:
+            page.goto(link, timeout=20000)
+            page.wait_for_timeout(2000)
+            html = page.content()
+            soup = BeautifulSoup(html, "html.parser")
 
-def fetch_soup(link):
-    try:
-        resp = requests.get(link, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
-        return BeautifulSoup(resp.text, "html.parser")
-    except Exception:
-        return None
+            if "batdongsan.com.vn" in domain:
+                return parse_batdongsan(link, soup)
+            elif "nhatot.com" in domain:
+                return parse_nhatot(link, soup)
+            elif "alonhadat.com.vn" in domain:
+                return parse_alonhadat(link, soup)
+            elif "guland.vn" in domain:
+                return parse_guland(link, soup)
+            elif "i-nhadat.com" in domain:
+                return parse_inhadat(link, soup)
+            elif "i-batdongsan.com" in domain:
+                return parse_ibatdongsan(link, soup)
+            elif "muaban.net" in domain:
+                return parse_muaban(link, soup)
+            elif "rever.vn" in domain:
+                return parse_rever(link, soup)
+            else:
+                return {
+                    "link": link,
+                    "title": "❓ Không hỗ trợ domain này",
+                    "price": "",
+                    "area": "",
+                    "description": "",
+                    "image": "",
+                    "contact": ""
+                }
+        except Exception as e:
+            return {
+                "link": link,
+                "title": f"⚠️ Lỗi: {str(e)}",
+                "price": "",
+                "area": "",
+                "description": "",
+                "image": "",
+                "contact": ""
+            }
+        finally:
+            browser.close()
 
-def extract_info_batdongsan(link):
-    soup = fetch_soup(link)
-    if not soup:
-        return {"link": link, "title": "❌ Không load được trang"}
+def get_domain(url: str) -> str:
+    from urllib.parse import urlparse
+    return urlparse(url).netloc.lower()
 
-    title = soup.find("h1") or soup.title
-    price = soup.find(text=re.compile(r"Giá")).find_next() if soup.find(text=re.compile(r"Giá")) else ""
-    area = soup.find(text=re.compile(r"Diện tích")).find_next() if soup.find(text=re.compile(r"Diện tích")) else ""
-    desc = soup.find("div", {"class": re.compile("section-content|description")})
-    img = soup.find("img", src=re.compile(r"https.*\.jpg"))
-    phone = soup.find(text=re.compile(r"0\d{9,10}"))
+# --- Template parsers ---
 
+def parse_batdongsan(link, soup):
+    title = soup.find("h1")
+    price = soup.find("div", class_="re__price")
+    area = soup.find("div", class_="re__area")
+    description = soup.find("div", class_="re__section-content")
+    image = soup.find("img")
+    contact = soup.find("div", class_="re__contact-name")
     return {
         "link": link,
-        "title": title.get_text(strip=True) if title else "",
-        "price": price.get_text(strip=True) if price else "",
-        "area": area.get_text(strip=True) if area else "",
-        "description": desc.get_text(strip=True) if desc else "",
-        "image": img["src"] if img else "",
-        "contact": phone.strip() if phone else "",
+        "title": title.text.strip() if title else "",
+        "price": price.text.strip() if price else "",
+        "area": area.text.strip() if area else "",
+        "description": description.text.strip() if description else "",
+        "image": image["src"] if image else "",
+        "contact": contact.text.strip() if contact else ""
     }
 
-def extract_info_nhatot(link):
-    soup = fetch_soup(link)
-    if not soup:
-        return {"link": link, "title": "❌ Không load được trang"}
-
-    title = soup.find("h1") or soup.title
-    price = soup.find(text=re.compile(r"(Giá|₫)")).find_next() if soup.find(text=re.compile(r"(Giá|₫)")) else ""
-    area = soup.find(text=re.compile(r"m2|m²"))
-    desc = soup.find("div", {"class": re.compile("section-content|description")})
-    img = soup.find("img", src=re.compile(r"https.*\.jpg"))
-    phone = soup.find(text=re.compile(r"0\d{9,10}"))
-
+def parse_nhatot(link, soup):
+    title = soup.find("h1")
+    price = soup.find("div", class_="price")
+    area = soup.find("div", class_="area")
+    description = soup.find("div", class_="section-content")
+    image = soup.find("img")
+    contact = soup.find("div", class_="seller-info")
     return {
         "link": link,
-        "title": title.get_text(strip=True) if title else "",
-        "price": price.get_text(strip=True) if price else "",
-        "area": area.strip() if area else "",
-        "description": desc.get_text(strip=True) if desc else "",
-        "image": img["src"] if img else "",
-        "contact": phone.strip() if phone else "",
+        "title": title.text.strip() if title else "",
+        "price": price.text.strip() if price else "",
+        "area": area.text.strip() if area else "",
+        "description": description.text.strip() if description else "",
+        "image": image["src"] if image else "",
+        "contact": contact.text.strip() if contact else ""
     }
 
-def extract_info_alonhadat(link):
-    soup = fetch_soup(link)
-    if not soup:
-        return {"link": link, "title": "❌ Không load được trang"}
-
-    title = soup.find("h1") or soup.title
+def parse_alonhadat(link, soup):
+    title = soup.find("h1")
     price = soup.find("span", class_="price")
-    area = soup.find(text=re.compile(r"m2|m²"))
-    desc = soup.find("div", {"class": "short-desc"})
-    img = soup.find("img", src=re.compile(r"https.*\.jpg"))
-    phone = soup.find(text=re.compile(r"0\d{9,10}"))
-
+    area = soup.find("span", class_="square")
+    description = soup.find("div", class_="content")
+    image = soup.find("img")
+    contact = soup.find("div", class_="contact")
     return {
         "link": link,
-        "title": title.get_text(strip=True) if title else "",
-        "price": price.get_text(strip=True) if price else "",
-        "area": area.strip() if area else "",
-        "description": desc.get_text(strip=True) if desc else "",
-        "image": img["src"] if img else "",
-        "contact": phone.strip() if phone else "",
+        "title": title.text.strip() if title else "",
+        "price": price.text.strip() if price else "",
+        "area": area.text.strip() if area else "",
+        "description": description.text.strip() if description else "",
+        "image": image["src"] if image else "",
+        "contact": contact.text.strip() if contact else ""
     }
 
-def extract_info_guland(link):
-    soup = fetch_soup(link)
-    if not soup:
-        return {"link": link, "title": "❌ Không load được trang"}
-
-    title = soup.title
-    desc = soup.find("div", class_=re.compile("description"))
-    phone = soup.find(text=re.compile(r"0\d{9,10}"))
-
+# Các domain còn lại làm tương tự:
+def parse_guland(link, soup):
+    title = soup.find("h1")
+    description = soup.find("div", class_="content-post")
+    contact = soup.find("div", class_="contact-content")
     return {
         "link": link,
-        "title": title.get_text(strip=True) if title else "",
+        "title": title.text.strip() if title else "",
         "price": "",
         "area": "",
-        "description": desc.get_text(strip=True) if desc else "",
+        "description": description.text.strip() if description else "",
         "image": "",
-        "contact": phone.strip() if phone else "",
+        "contact": contact.text.strip() if contact else ""
     }
 
-def extract_info_muaban(link):
-    soup = fetch_soup(link)
-    if not soup:
-        return {"link": link, "title": "❌ Không load được trang"}
-
-    title = soup.find("h1") or soup.title
-    price = soup.find(text=re.compile(r"(Giá|₫)"))
-    area = soup.find(text=re.compile(r"m2|m²"))
-    desc = soup.find("div", {"class": re.compile("description|content")})
-    phone = soup.find(text=re.compile(r"0\d{9,10}"))
-
+def parse_inhadat(link, soup):
+    title = soup.find("h1")
+    description = soup.find("div", class_="col-lg-9")
     return {
         "link": link,
-        "title": title.get_text(strip=True) if title else "",
-        "price": price.strip() if price else "",
-        "area": area.strip() if area else "",
-        "description": desc.get_text(strip=True) if desc else "",
-        "image": "",
-        "contact": phone.strip() if phone else "",
-    }
-
-def extract_info_rever(link):
-    soup = fetch_soup(link)
-    if not soup:
-        return {"link": link, "title": "❌ Không load được trang"}
-
-    title = soup.title
-    desc = soup.find("div", class_=re.compile("description"))
-    phone = soup.find(text=re.compile(r"0\d{9,10}"))
-
-    return {
-        "link": link,
-        "title": title.get_text(strip=True) if title else "",
+        "title": title.text.strip() if title else "",
         "price": "",
         "area": "",
-        "description": desc.get_text(strip=True) if desc else "",
+        "description": description.text.strip() if description else "",
         "image": "",
-        "contact": phone.strip() if phone else "",
+        "contact": ""
     }
 
-def extract_info_ibds(link):
-    soup = fetch_soup(link)
-    if not soup:
-        return {"link": link, "title": "❌ Không load được trang"}
+def parse_ibatdongsan(link, soup):
+    return parse_inhadat(link, soup)
 
-    title = soup.title
-    desc = soup.find("div", class_=re.compile("description|content"))
-    phone = soup.find(text=re.compile(r"0\d{9,10}"))
-
+def parse_muaban(link, soup):
+    title = soup.find("h1")
+    price = soup.find("div", class_="price")
+    area = soup.find("div", class_="attributes")
+    description = soup.find("div", class_="description")
+    image = soup.find("img")
     return {
         "link": link,
-        "title": title.get_text(strip=True) if title else "",
+        "title": title.text.strip() if title else "",
+        "price": price.text.strip() if price else "",
+        "area": area.text.strip() if area else "",
+        "description": description.text.strip() if description else "",
+        "image": image["src"] if image else "",
+        "contact": ""
+    }
+
+def parse_rever(link, soup):
+    title = soup.find("h1")
+    description = soup.find("div", class_="description")
+    return {
+        "link": link,
+        "title": title.text.strip() if title else "",
         "price": "",
         "area": "",
-        "description": desc.get_text(strip=True) if desc else "",
+        "description": description.text.strip() if description else "",
         "image": "",
-        "contact": phone.strip() if phone else "",
+        "contact": ""
     }
