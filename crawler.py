@@ -1,5 +1,6 @@
 from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
+from urllib.parse import urlparse
 
 def extract_info_generic(link: str) -> dict:
     domain = get_domain(link)
@@ -9,26 +10,12 @@ def extract_info_generic(link: str) -> dict:
         page = browser.new_page()
         try:
             page.goto(link, timeout=20000)
-            page.wait_for_timeout(2000)
+            page.wait_for_timeout(3000)
             html = page.content()
             soup = BeautifulSoup(html, "html.parser")
 
             if "batdongsan.com.vn" in domain:
                 return parse_batdongsan(link, soup)
-            elif "nhatot.com" in domain:
-                return parse_nhatot(link, soup)
-            elif "alonhadat.com.vn" in domain:
-                return parse_alonhadat(link, soup)
-            elif "guland.vn" in domain:
-                return parse_guland(link, soup)
-            elif "i-nhadat.com" in domain:
-                return parse_inhadat(link, soup)
-            elif "i-batdongsan.com" in domain:
-                return parse_ibatdongsan(link, soup)
-            elif "muaban.net" in domain:
-                return parse_muaban(link, soup)
-            elif "rever.vn" in domain:
-                return parse_rever(link, soup)
             else:
                 return {
                     "link": link,
@@ -39,6 +26,7 @@ def extract_info_generic(link: str) -> dict:
                     "image": "",
                     "contact": ""
                 }
+
         except Exception as e:
             return {
                 "link": link,
@@ -53,118 +41,41 @@ def extract_info_generic(link: str) -> dict:
             browser.close()
 
 def get_domain(url: str) -> str:
-    from urllib.parse import urlparse
     return urlparse(url).netloc.lower()
-
-# --- Template parsers ---
 
 def parse_batdongsan(link, soup):
     title = soup.find("h1")
-    price = soup.find("div", class_="re__price")
-    area = soup.find("div", class_="re__area")
+
+    # Tìm thông tin giá và diện tích
+    info_items = soup.find_all("div", class_="re__pr-short-info-item")
+    price = ""
+    area = ""
+    for item in info_items:
+        label = item.find("span", class_="title")
+        value = item.find("span", class_="value")
+        if label and value:
+            label_text = label.get_text(strip=True)
+            if "Mức giá" in label_text:
+                price = value.get_text(strip=True)
+            elif "Diện tích" in label_text:
+                area = value.get_text(strip=True)
+
+    # Mô tả
     description = soup.find("div", class_="re__section-content")
-    image = soup.find("img")
+
+    # Ảnh đại diện (nên dùng og:image thay vì <img>)
+    image_tag = soup.find("meta", property="og:image")
+    image = image_tag["content"] if image_tag else ""
+
+    # Tên người liên hệ
     contact = soup.find("div", class_="re__contact-name")
+
     return {
         "link": link,
         "title": title.text.strip() if title else "",
-        "price": price.text.strip() if price else "",
-        "area": area.text.strip() if area else "",
+        "price": price,
+        "area": area,
         "description": description.text.strip() if description else "",
-        "image": image["src"] if image else "",
+        "image": image,
         "contact": contact.text.strip() if contact else ""
-    }
-
-def parse_nhatot(link, soup):
-    title = soup.find("h1")
-    price = soup.find("div", class_="price")
-    area = soup.find("div", class_="area")
-    description = soup.find("div", class_="section-content")
-    image = soup.find("img")
-    contact = soup.find("div", class_="seller-info")
-    return {
-        "link": link,
-        "title": title.text.strip() if title else "",
-        "price": price.text.strip() if price else "",
-        "area": area.text.strip() if area else "",
-        "description": description.text.strip() if description else "",
-        "image": image["src"] if image else "",
-        "contact": contact.text.strip() if contact else ""
-    }
-
-def parse_alonhadat(link, soup):
-    title = soup.find("h1")
-    price = soup.find("span", class_="price")
-    area = soup.find("span", class_="square")
-    description = soup.find("div", class_="content")
-    image = soup.find("img")
-    contact = soup.find("div", class_="contact")
-    return {
-        "link": link,
-        "title": title.text.strip() if title else "",
-        "price": price.text.strip() if price else "",
-        "area": area.text.strip() if area else "",
-        "description": description.text.strip() if description else "",
-        "image": image["src"] if image else "",
-        "contact": contact.text.strip() if contact else ""
-    }
-
-# Các domain còn lại làm tương tự:
-def parse_guland(link, soup):
-    title = soup.find("h1")
-    description = soup.find("div", class_="content-post")
-    contact = soup.find("div", class_="contact-content")
-    return {
-        "link": link,
-        "title": title.text.strip() if title else "",
-        "price": "",
-        "area": "",
-        "description": description.text.strip() if description else "",
-        "image": "",
-        "contact": contact.text.strip() if contact else ""
-    }
-
-def parse_inhadat(link, soup):
-    title = soup.find("h1")
-    description = soup.find("div", class_="col-lg-9")
-    return {
-        "link": link,
-        "title": title.text.strip() if title else "",
-        "price": "",
-        "area": "",
-        "description": description.text.strip() if description else "",
-        "image": "",
-        "contact": ""
-    }
-
-def parse_ibatdongsan(link, soup):
-    return parse_inhadat(link, soup)
-
-def parse_muaban(link, soup):
-    title = soup.find("h1")
-    price = soup.find("div", class_="price")
-    area = soup.find("div", class_="attributes")
-    description = soup.find("div", class_="description")
-    image = soup.find("img")
-    return {
-        "link": link,
-        "title": title.text.strip() if title else "",
-        "price": price.text.strip() if price else "",
-        "area": area.text.strip() if area else "",
-        "description": description.text.strip() if description else "",
-        "image": image["src"] if image else "",
-        "contact": ""
-    }
-
-def parse_rever(link, soup):
-    title = soup.find("h1")
-    description = soup.find("div", class_="description")
-    return {
-        "link": link,
-        "title": title.text.strip() if title else "",
-        "price": "",
-        "area": "",
-        "description": description.text.strip() if description else "",
-        "image": "",
-        "contact": ""
     }
