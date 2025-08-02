@@ -3,7 +3,6 @@ import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urlparse
 
-
 def extract_info_generic(link):
     domain = urlparse(link).netloc
 
@@ -22,16 +21,22 @@ def extract_info_generic(link):
     elif "i-nhadat.com" in domain or "i-batdongsan.com" in domain:
         return extract_info_ibds(link)
     else:
-        return {"link": link, "title": "❓ Không hỗ trợ domain này", "price": "", "area": "", "description": "", "image": "", "contact": ""}
-
+        return {
+            "link": link,
+            "title": "❓ Không hỗ trợ domain này",
+            "price": "",
+            "area": "",
+            "description": "",
+            "image": "",
+            "contact": ""
+        }
 
 def fetch_soup(link):
     try:
         resp = requests.get(link, headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
         return BeautifulSoup(resp.text, "html.parser")
-    except Exception as e:
+    except Exception:
         return None
-
 
 def extract_info_batdongsan(link):
     soup = fetch_soup(link)
@@ -55,7 +60,6 @@ def extract_info_batdongsan(link):
         "contact": phone.strip() if phone else "",
     }
 
-
 def extract_info_nhatot(link):
     soup = fetch_soup(link)
     if not soup:
@@ -77,7 +81,6 @@ def extract_info_nhatot(link):
         "image": img["src"] if img else "",
         "contact": phone.strip() if phone else "",
     }
-
 
 def extract_info_alonhadat(link):
     soup = fetch_soup(link)
@@ -101,7 +104,6 @@ def extract_info_alonhadat(link):
         "contact": phone.strip() if phone else "",
     }
 
-
 def extract_info_guland(link):
     soup = fetch_soup(link)
     if not soup:
@@ -120,7 +122,6 @@ def extract_info_guland(link):
         "image": "",
         "contact": phone.strip() if phone else "",
     }
-
 
 def extract_info_muaban(link):
     soup = fetch_soup(link)
@@ -143,7 +144,6 @@ def extract_info_muaban(link):
         "contact": phone.strip() if phone else "",
     }
 
-
 def extract_info_rever(link):
     soup = fetch_soup(link)
     if not soup:
@@ -163,8 +163,21 @@ def extract_info_rever(link):
         "contact": phone.strip() if phone else "",
     }
 
-
 def extract_info_ibds(link):
     soup = fetch_soup(link)
     if not soup:
-        return {"link": link
+        return {"link": link, "title": "❌ Không load được trang"}
+
+    title = soup.title
+    desc = soup.find("div", class_=re.compile("description|content"))
+    phone = soup.find(text=re.compile(r"0\d{9,10}"))
+
+    return {
+        "link": link,
+        "title": title.get_text(strip=True) if title else "",
+        "price": "",
+        "area": "",
+        "description": desc.get_text(strip=True) if desc else "",
+        "image": "",
+        "contact": phone.strip() if phone else "",
+    }
