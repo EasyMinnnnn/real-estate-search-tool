@@ -1,6 +1,7 @@
 from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
-from urllib.parse import urlparse
+from urllib.parse import urlparse, quote
+import requests
 
 def extract_info_generic(link: str) -> dict:
     domain = get_domain(link)
@@ -16,48 +17,84 @@ def extract_info_generic(link: str) -> dict:
             "contact": ""
         }
 
+    try:
+        html = fetch_with_playwright(link)
+        soup = BeautifulSoup(html, "html.parser")
+
+        # Nếu gặp CAPTCHA
+        if soup.title and "xác minh" in soup.title.text.lower():
+            print("⚠️ CAPTCHA phát hiện, thử Google Cache...")
+            return extract_from_google_cache(link)
+
+        if "batdongsan.com.vn" in domain:
+            return parse_batdongsan(link, soup)
+        elif "alonhadat.com.vn" in domain:
+            return parse_alonhadat(link, soup)
+
+    except Exception as e:
+        print(f"❌ Lỗi chính: {e}")
+        return extract_from_google_cache(link)
+
+
+def fetch_with_playwright(link: str) -> str:
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)  # Đổi thành False nếu muốn quan sát trình duyệt
-        context = browser.new_context(
-            user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
-            ),
-            locale="vi-VN",
-            viewport={"width": 1280, "height": 800}
-        )
+        browser = p.chromium.launch(headless=True)
+        context = browser.new_context(user_agent=(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
+        ))
         page = context.new_page()
+        page.goto(link, timeout=30000)
+        page.wait_for_load_state("networkidle")
+        page.wait_for_timeout(3000)
+        html = page.content()
+        browser.close()
+        return html
 
-        try:
-            page.goto(link, timeout=30000)
-            page.wait_for_load_state("networkidle")
-            page.wait_for_timeout(5000)  # Tăng thời gian chờ JS render
 
-            html = page.content()
-            soup = BeautifulSoup(html, "html.parser")
+def extract_from_google_cache(link: str) -> dict:
+    encoded_url = quote(link, safe='')
+    cache_url = f"https://webcache.googleusercontent.com/search?q=cache:{encoded_url}"
 
-            if "batdongsan.com.vn" in domain:
-                return parse_batdongsan(link, soup)
-            elif "alonhadat.com.vn" in domain:
-                print("📄 DOM alonhadat preview:")
-                print(html[:2000])  # In 2000 ký tự đầu HTML để debug nếu cần
-                return parse_alonhadat(link, soup)
+    try:
+        resp = requests.get(cache_url, timeout=10, headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                          "(KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
+        })
+        if resp.status_code != 200:
+            raise Exception(f"Google Cache trả về mã lỗi {resp.status_code}")
 
-        except Exception as e:
+        soup = BeautifulSoup(resp.text, "html.parser")
+
+        if "batdongsan.com.vn" in link:
+            return parse_batdongsan(link, soup)
+        elif "alonhadat.com.vn" in link:
+            return parse_alonhadat(link, soup)
+        else:
             return {
                 "link": link,
-                "title": f"⚠️ Lỗi: {str(e)}",
+                "title": "❓ Không hỗ trợ domain này",
                 "price": "",
                 "area": "",
                 "description": "",
                 "image": "",
                 "contact": ""
             }
-        finally:
-            browser.close()
+    except Exception as e:
+        return {
+            "link": link,
+            "title": f"⚠️ Google Cache lỗi: {str(e)}",
+            "price": "",
+            "area": "",
+            "description": "",
+            "image": "",
+            "contact": ""
+        }
+
 
 def get_domain(url: str) -> str:
     return urlparse(url).netloc.lower()
+
 
 def parse_batdongsan(link, soup):
     title = soup.find("h1", class_="re__pr-title")
@@ -79,22 +116,14 @@ def parse_batdongsan(link, soup):
         "contact": contact.text.strip() if contact else ""
     }
 
-def parse_alonhadat(link, soup):
-    # Tiêu đề
-    title = soup.find("h1")
 
-    # Giá và diện tích (2 span.value liên tiếp)
+def parse_alonhadat(link, soup):
+    title = soup.find("h1")
     value_tags = soup.find_all("span", class_="value")
     price = value_tags[0].text.strip() if len(value_tags) > 0 else ""
     area = value_tags[1].text.strip() if len(value_tags) > 1 else ""
-
-    # Mô tả
     description = soup.find("div", class_="detail text-content")
-
-    # Hình ảnh đại diện
     image = soup.find("img", id="limage")
-
-    # Người liên hệ + SĐT nếu có
     contact_name = soup.find("div", class_="name")
     contact_phone_tag = soup.find("a", href=lambda href: href and href.startswith("tel:"))
     contact_phone = contact_phone_tag.text.strip() if contact_phone_tag else ""
