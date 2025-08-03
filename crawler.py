@@ -17,17 +17,21 @@ def extract_info_generic(link: str) -> dict:
         }
 
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        context = browser.new_context(user_agent=(
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
-        ))
+        browser = p.chromium.launch(headless=True)  # Đổi thành False nếu muốn quan sát trình duyệt
+        context = browser.new_context(
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
+            ),
+            locale="vi-VN",
+            viewport={"width": 1280, "height": 800}
+        )
         page = context.new_page()
 
         try:
             page.goto(link, timeout=30000)
             page.wait_for_load_state("networkidle")
-            page.wait_for_timeout(3000)  # Đợi JS render xong
+            page.wait_for_timeout(5000)  # Tăng thời gian chờ JS render
 
             html = page.content()
             soup = BeautifulSoup(html, "html.parser")
@@ -35,6 +39,8 @@ def extract_info_generic(link: str) -> dict:
             if "batdongsan.com.vn" in domain:
                 return parse_batdongsan(link, soup)
             elif "alonhadat.com.vn" in domain:
+                print("📄 DOM alonhadat preview:")
+                print(html[:2000])  # In 2000 ký tự đầu HTML để debug nếu cần
                 return parse_alonhadat(link, soup)
 
         except Exception as e:
@@ -108,4 +114,3 @@ def parse_alonhadat(link, soup):
         "image": image["src"] if image and image.has_attr("src") else "",
         "contact": contact_full.strip()
     }
-
