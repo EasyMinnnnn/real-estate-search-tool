@@ -74,20 +74,38 @@ def parse_batdongsan(link, soup):
     }
 
 def parse_alonhadat(link, soup):
+    # Tiêu đề
     title = soup.find("h1")
-    price = soup.select_one("span.value")
-    area_tags = soup.find_all("span", class_="value")
-    area = area_tags[1] if len(area_tags) > 1 else None
+
+    # Giá và diện tích (2 span.value liên tiếp)
+    value_tags = soup.find_all("span", class_="value")
+    price = value_tags[0].text.strip() if len(value_tags) > 0 else ""
+    area = value_tags[1].text.strip() if len(value_tags) > 1 else ""
+
+    # Mô tả
     description = soup.find("div", class_="detail text-content")
-    contact = soup.find("div", class_="name")
+
+    # Hình ảnh đại diện
     image = soup.find("img", id="limage")
+
+    # Người liên hệ + SĐT nếu có
+    contact_name = soup.find("div", class_="name")
+    contact_phone_tag = soup.find("a", href=lambda href: href and href.startswith("tel:"))
+    contact_phone = contact_phone_tag.text.strip() if contact_phone_tag else ""
+
+    contact_full = ""
+    if contact_name:
+        contact_full += contact_name.text.strip()
+    if contact_phone:
+        contact_full += f" - {contact_phone}"
 
     return {
         "link": link,
         "title": title.text.strip() if title else "",
-        "price": price.text.strip() if price else "",
-        "area": area.text.strip() if area else "",
+        "price": price,
+        "area": area,
         "description": description.get_text(separator="\n").strip() if description else "",
         "image": image["src"] if image and image.has_attr("src") else "",
-        "contact": contact.text.strip() if contact else ""
+        "contact": contact_full.strip()
     }
+
