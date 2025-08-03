@@ -2,7 +2,7 @@ from crawler import extract_info_generic
 
 # 🔎 Thêm các link bạn muốn test vào đây
 test_links = [
-    "https://batdongsan.com.vn/ban-nha-rieng-duong-cao-thang-phuong-12-5/ban-2-mat-hem-71m2-ngang-khung-5m-ngay-khu-ha-do-sam-uat-p12-q10-nhinh-9-ty-pr42505316"
+    "https://alonhadat.com.vn/-ban-nha-2-mat-tien-hem-xe-hoi-ngay-ha-do-quan-10-gia-chi-7-9-ty--17025352.html"
 ]
 
 print("🔍 ĐANG TEST CÁC LINK RAO BÁN:\n")
