@@ -25,12 +25,10 @@ def _get_env():
 
 
 def _canon_url(s: str) -> str:
-    """Chuẩn hóa URL để khử trùng lặp: bỏ fragment/query theo heuristic đơn giản."""
+    """Chuẩn hóa URL để khử trùng lặp: bỏ query/fragment, bỏ '/' cuối."""
     try:
         p = urlparse(s)
-        # bỏ query/fragment để tránh trùng cùng bài nhưng khác tracking params
         p = p._replace(query="", fragment="")
-        # chuẩn hóa path: bỏ dấu "/" cuối
         path = p.path or "/"
         if path != "/" and path.endswith("/"):
             path = path[:-1]
@@ -40,10 +38,33 @@ def _canon_url(s: str) -> str:
         return s
 
 
+def _parse_buckets() -> list[int]:
+    raw = os.getenv("BATCH_BUCKETS", "8,8,6,4,4")
+    try:
+        buckets = [int(x.strip()) for x in raw.split(",") if x.strip().isdigit()]
+        return buckets or [8, 8, 6, 4, 4]
+    except Exception:
+        return [8, 8, 6, 4, 4]
+
+
+def _parse_whitelist() -> set[str]:
+    raw = os.getenv("SITE_WHITELIST", "").strip()
+    if not raw:
+        return set()
+    return {d.strip().lower() for d in raw.split(",") if d.strip()}
+
+
 def get_top_links(query: str, num_links: int = 5) -> list[str]:
     api_key, cx = _get_env()
     url = "https://www.googleapis.com/customsearch/v1"
-    params = {"key": api_key, "cx": cx, "q": query, "num": num_links, "hl": "vi"}
+    params = {
+        "key": api_key,
+        "cx": cx,
+        "q": query,
+        "num": num_links,
+        "hl": "vi",
+        "gl": "vn",
+    }
     resp = requests.get(url, params=params, timeout=REQ_TIMEOUT)
     try:
         resp.raise_for_status()
@@ -55,13 +76,27 @@ def get_top_links(query: str, num_links: int = 5) -> list[str]:
         msg = data["error"].get("message", "Unknown Google API error")
         raise RuntimeError(f"Google API error: {msg}")
 
-    links = []
-    for item in data.get("items", []):
-        link = item.get("link")
-        if link and link.startswith("http"):
-            links.append(_canon_url(link))
+    items = data.get("items", [])
+    if not items:
+        raise RuntimeError(
+            "Google API trả về 0 kết quả. Kiểm tra CSE đã bật 'Search the entire web', "
+            "quota Custom Search JSON API, hoặc thử truy vấn khác."
+        )
 
-    # khử trùng lặp, giữ thứ tự
+    whitelist = _parse_whitelist()
+    links = []
+    for item in items:
+        link = item.get("link")
+        if not link or not link.startswith("http"):
+            continue
+        cu = _canon_url(link)
+        if whitelist:
+            d = urlparse(cu).netloc.lower()
+            if not any(w in d for w in whitelist):
+                continue
+        links.append(cu)
+
+    # Khử trùng lặp, giữ thứ tự
     seen, dedup = set(), []
     for u in links:
         if u not in seen:
@@ -82,6 +117,7 @@ def get_sub_links(link: str, max_links: int = 3) -> list[str]:
         base = urlparse(link)
         base_domain, base_path = base.netloc, (base.path.rstrip("/") or "/")
 
+        whitelist = _parse_whitelist()
         for a in soup.find_all("a", href=True):
             full = urljoin(link, a["href"])
             p = urlparse(full)
@@ -94,6 +130,10 @@ def get_sub_links(link: str, max_links: int = 3) -> list[str]:
                 # heuristic: có id bài
                 if ("pr" in p.path) or re.search(r"/\d{6,}\.(?:htm|html)$", p.path):
                     cu = _canon_url(full)
+                    if whitelist:
+                        d = urlparse(cu).netloc.lower()
+                        if not any(w in d for w in whitelist):
+                            continue
                     if cu not in subs:
                         subs.append(cu)
                         if len(subs) >= max_links:
@@ -108,14 +148,22 @@ def search_google(query: str, target_total: int = 30) -> list[dict]:
     Trả về list dict tin rao: title, price, area, description, image, contact, link.
     target_total=30 để đủ 3 lần bấm (10 tin/lần).
     """
-    top_links = get_top_links(query, num_links=5)
+    max_top = int(os.getenv("MAX_TOP_LINKS", "5") or "5")
+    top_links = get_top_links(query, num_links=max_top)
 
-    # Phân bổ số link con theo từng domain (tổng gần ~30)
-    buckets = [8, 8, 6, 4, 4]
+    buckets = _parse_buckets()
+    # nếu số top_links ít hơn buckets -> cắt buckets tương ứng
+    buckets = buckets[: len(top_links)]
+
     results: list[dict] = []
-    for i, link in enumerate(top_links[:5]):
-        subs = get_sub_links(link, max_links=buckets[i])
+    seen_links: set[str] = set()
+
+    for i, link in enumerate(top_links):
+        subs = get_sub_links(link, max_links=buckets[i] if i < len(buckets) else 3)
         for sub in subs:
+            if sub in seen_links:
+                continue
+            seen_links.add(sub)
             try:
                 info = extract_info_generic(sub)
             except Exception as e:
