@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import os
-from urllib.parse import urlparse, quote
+import re
+from urllib.parse import urlparse, quote, urljoin
 
 import requests
 from bs4 import BeautifulSoup
@@ -13,6 +14,7 @@ USER_AGENT = (
     "(KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36"
 )
 HEADLESS = os.getenv("PLAYWRIGHT_HEADLESS", "1") != "0"
+USE_PLAYWRIGHT = os.getenv("USE_PLAYWRIGHT", "1") != "0"
 ALONHADAT_STORAGE = os.getenv("ALONHADAT_STORAGE", "auth_alonhadat.json")
 
 SUPPORTED_DOMAINS = ("batdongsan.com.vn", "alonhadat.com.vn")
@@ -29,13 +31,18 @@ def extract_info_generic(link: str) -> dict:
         return _unsupported(link)
 
     try:
-        html = fetch_with_playwright(link, domain)
-        soup = BeautifulSoup(html, "html.parser")
+        # Cho phép tắt Playwright qua biến môi trường
+        if USE_PLAYWRIGHT:
+            html = fetch_with_playwright(link, domain)
+        else:
+            html = fetch_with_requests(link)
+
+        # Ưu tiên parser lxml nếu có, rơi về html.parser khi thiếu
+        soup = BeautifulSoup(html, "lxml") if _has_lxml() else BeautifulSoup(html, "html.parser")
 
         # CAPTCHA / Verify page?
         title_text = (soup.title.get_text(strip=True) if soup.title else "").lower()
-        if "xác minh" in title_text or "verify" in title_text or "captcha" in title_text:
-            # cố Google cache
+        if any(x in title_text for x in ("xác minh", "captcha", "verify")):
             return extract_from_google_cache(link)
 
         if "batdongsan.com.vn" in domain:
@@ -43,7 +50,6 @@ def extract_info_generic(link: str) -> dict:
         elif "alonhadat.com.vn" in domain:
             return parse_alonhadat(link, soup)
 
-        # Phòng xa
         return _unsupported(link)
 
     except Exception as e:
@@ -60,6 +66,14 @@ def extract_info_generic(link: str) -> dict:
                 "image": "",
                 "contact": "",
             }
+
+
+def _has_lxml() -> bool:
+    try:
+        import lxml  # noqa: F401
+        return True
+    except Exception:
+        return False
 
 
 def fetch_with_playwright(link: str, domain: str) -> str:
@@ -82,11 +96,10 @@ def fetch_with_playwright(link: str, domain: str) -> str:
         try:
             page.goto(link, timeout=45000, wait_until="domcontentloaded")
             page.wait_for_load_state("networkidle", timeout=15000)
-            page.wait_for_timeout(1500)  # thả nhẹ JS
+            page.wait_for_timeout(1200)
             html = page.content()
             return html
         except PWTimeout:
-            # Hết kiên nhẫn -> thử requests fallback
             return fetch_with_requests(link)
         finally:
             context.close()
@@ -94,8 +107,8 @@ def fetch_with_playwright(link: str, domain: str) -> str:
 
 
 def fetch_with_requests(link: str) -> str:
-    """Fallback nhẹ nhàng nếu Playwright lỗi/timeout."""
-    resp = requests.get(link, timeout=15, headers={"User-Agent": USER_AGENT})
+    """Fallback nhẹ nhàng nếu Playwright lỗi/timeout hoặc bị tắt."""
+    resp = requests.get(link, timeout=20, headers={"User-Agent": USER_AGENT})
     resp.raise_for_status()
     return resp.text
 
@@ -104,11 +117,11 @@ def extract_from_google_cache(link: str) -> dict:
     encoded_url = quote(link, safe="")
     cache_url = f"https://webcache.googleusercontent.com/search?q=cache:{encoded_url}"
 
-    resp = requests.get(cache_url, timeout=15, headers={"User-Agent": USER_AGENT})
+    resp = requests.get(cache_url, timeout=20, headers={"User-Agent": USER_AGENT})
     if resp.status_code != 200:
         raise RuntimeError(f"Google Cache trả về mã lỗi {resp.status_code}")
 
-    soup = BeautifulSoup(resp.text, "html.parser")
+    soup = BeautifulSoup(resp.text, "lxml") if _has_lxml() else BeautifulSoup(resp.text, "html.parser")
 
     if "batdongsan.com.vn" in link:
         return parse_batdongsan(link, soup)
@@ -150,36 +163,90 @@ def parse_batdongsan(link: str, soup: BeautifulSoup) -> dict:
     }
 
 
+# ------- Alonhadat helpers -------
+def _abs_url(base: str, src: str) -> str:
+    try:
+        if not src:
+            return ""
+        return urljoin(base, src)
+    except Exception:
+        return src or ""
+
+
 def parse_alonhadat(link: str, soup: BeautifulSoup) -> dict:
     """
-    Alonhadat thường có:
-    - Title: h1
-    - Giá/DT: span.value
-    - Mô tả: div.detail.text-content
-    - Ảnh: img#limage
-    - Liên hệ: div.name + thẻ <a href="tel:...">
+    Trích xuất chi tiết từ trang alonhadat.com.vn
+    - Tiêu đề: <h1>
+    - Giá/DT: <span class="value"> (thường 2 phần tử đầu)
+    - Mô tả: <div class="detail text-content">
+    - Ảnh: <img id="limage"> (URL tương đối -> chuẩn hoá tuyệt đối)
+    - Liên hệ: <div class="name"> + <a href="tel:..."> (fallback regex)
     """
-    title = soup.find("h1")
-    value_tags = soup.find_all("span", class_="value")
-    price = value_tags[0].get_text(strip=True) if len(value_tags) > 0 else ""
-    area = value_tags[1].get_text(strip=True) if len(value_tags) > 1 else ""
-    description = soup.find("div", class_="detail text-content")
-    image = soup.find("img", id="limage")
-    contact_name = soup.find("div", class_="name")
-    contact_phone_tag = soup.find("a", href=lambda href: href and str(href).startswith("tel:"))
-    contact_phone = contact_phone_tag.get_text(strip=True) if contact_phone_tag else ""
+    # ----- Tiêu đề -----
+    title_el = soup.find("h1")
+    title = title_el.get_text(strip=True) if title_el else ""
 
-    contact_full = (contact_name.get_text(strip=True) if contact_name else "").strip()
-    if contact_phone:
-        contact_full = (contact_full + " - " + contact_phone).strip(" -")
+    # ----- Giá & Diện tích -----
+    value_tags = soup.find_all("span", class_="value")
+    price = value_tags[0].get_text(" ", strip=True) if len(value_tags) > 0 else ""
+    area = value_tags[1].get_text(" ", strip=True) if len(value_tags) > 1 else ""
+
+    # Fallback nếu không tìm thấy theo span.value
+    if not price:
+        lbl = soup.find(string=re.compile(r"\bGiá\b", re.I))
+        if lbl and getattr(lbl, "parent", None):
+            nxt = lbl.parent.find_next(string=True)
+            if nxt:
+                price = str(nxt).strip()
+    if not area:
+        m = re.search(r"(\d[\d\.,]*)\s*m(?:2|²)\b", soup.get_text(" ", strip=True), re.I)
+        if m:
+            area = m.group(0).replace("  ", " ")
+
+    # ----- Mô tả -----
+    desc_el = soup.find("div", class_="detail text-content") or soup.select_one("div.detail.text-content")
+    if not desc_el:
+        desc_el = soup.select_one("div#content, div.description, div.post-content")
+    description = desc_el.get_text("\n", strip=True) if desc_el else ""
+
+    # ----- Ảnh -----
+    img = soup.find("img", id="limage")
+    image = ""
+    if img and img.has_attr("src"):
+        image = _abs_url(link, img["src"])
+    else:
+        og = soup.find("meta", property="og:image")
+        if og and og.get("content"):
+            image = _abs_url(link, og["content"])
+        else:
+            any_img = soup.select_one("div.images img, .image img, img")
+            if any_img and any_img.has_attr("src"):
+                image = _abs_url(link, any_img["src"])
+
+    # ----- Liên hệ -----
+    name_el = soup.find("div", class_="name") or soup.select_one(".info-contact .name, .name a, .name span")
+    contact_name = name_el.get_text(strip=True) if name_el else ""
+    phone_tag = soup.find("a", href=lambda h: h and str(h).startswith("tel:"))
+    phone = ""
+    if phone_tag:
+        phone = phone_tag.get_text(strip=True) or phone_tag.get("href", "").replace("tel:", "")
+    else:
+        # Fallback regex số điện thoại trong toàn trang
+        m = re.search(r"(0\d{9,10})", soup.get_text(" ", strip=True))
+        if m:
+            phone = m.group(1)
+
+    contact_full = contact_name
+    if phone:
+        contact_full = (contact_full + " - " + phone).strip(" -")
 
     return {
         "link": link,
-        "title": title.get_text(strip=True) if title else "",
+        "title": title,
         "price": price,
         "area": area,
-        "description": description.get_text(separator="\n").strip() if description else "",
-        "image": image["src"] if image and image.has_attr("src") else "",
+        "description": description,
+        "image": image,
         "contact": contact_full,
     }
 
