@@ -39,7 +39,7 @@ def _canon_url(s: str) -> str:
 
 
 def _parse_buckets():
-    raw = os.getenv("BATCH_BUCKETS", "10,8,6,4,4")  # hơi nới 1 chút ở domain đầu
+    raw = os.getenv("BATCH_BUCKETS", "10,8,6,4,4")  # hơi nới domain đầu
     try:
         buckets = [int(x.strip()) for x in raw.split(",") if x.strip()]
         return buckets or [10, 8, 6, 4, 4]
@@ -114,10 +114,9 @@ def get_top_links(query: str, num_links: int = 5) -> list:
     if links:
         return links
 
-    # Try 2: bias theo whitelist hoặc mặc định
+    # Try 2: bias theo whitelist hoặc mặc định 4 domain phổ biến
     if not wl:
         wl = {"batdongsan.com.vn", "alonhadat.com.vn", "chotot.com", "muaban.net"}
-    # cập nhật hàm _bias sau khi wl có giá trị mặc định
     add = " OR ".join(f"site:{d}" for d in wl)
     links = _call_google(f"{query} {add}", num_links)
     if links:
@@ -145,52 +144,100 @@ LIST_PATTERNS = re.compile(
 )
 
 
+def _sub_links_alonhadat(link: str, soup: BeautifulSoup, max_links: int) -> list:
+    """
+    Dành riêng cho alonhadat:
+    - Nếu link chi tiết (đuôi -<id>.html) -> trả luôn.
+    - Nếu link danh mục -> quét h3 a, div.content-item a, rồi fallback toàn bộ <a>.
+    """
+    subs: list[str] = []
+    p0 = urlparse(link)
+    domain = p0.netloc.lower()
+    path0 = p0.path or "/"
+
+    # Trang chi tiết
+    if re.search(r"-\d{6,}\.(?:htm|html)$", path0):
+        return [_canon_url(link)]
+
+    # Trang danh mục -> gom link chi tiết
+    detail_pat = re.compile(r"/[a-z0-9-]+-\d{6,}\.(?:htm|html)$", re.IGNORECASE)
+
+    candidates = []
+    candidates.extend(soup.select("h3 a[href]"))              # tiêu đề tin
+    candidates.extend(soup.select("div.content-item a[href]"))
+    candidates.extend(soup.select("a[href].vip, a[href].title"))
+
+    def _try_add(a_tag):
+        href = a_tag.get("href", "")
+        full = urljoin(link, href)
+        p = urlparse(full)
+        if p.scheme not in ("http", "https") or p.netloc.lower() != domain:
+            return
+        if detail_pat.search(p.path or ""):
+            cu = _canon_url(full)
+            if cu not in subs:
+                subs.append(cu)
+
+    for a in candidates:
+        _try_add(a)
+        if len(subs) >= max_links:
+            return subs[:max_links]
+
+    # fallback quét toàn bộ <a>
+    if len(subs) < max_links:
+        for a in soup.find_all("a", href=True):
+            _try_add(a)
+            if len(subs) >= max_links:
+                break
+
+    return subs[:max_links]
+
+
 def get_sub_links(link: str, max_links: int = 5) -> list:
     """
     - Nếu link là trang DANH SÁCH: lấy các link CHI TIẾT ở trong.
-    - Nếu link đã là CHI TIẾT: trả luôn link đó (để không bỏ lỡ).
+    - Nếu link đã là CHI TIẾT: trả luôn link đó.
+    - Có tối ưu riêng cho alonhadat.com.vn.
     """
     subs: list[str] = []
     try:
         resp = requests.get(link, headers={"User-Agent": UA}, timeout=REQ_TIMEOUT)
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "lxml")
-        p0 = urlparse(link)
-        base_domain = p0.netloc
 
-        # Nếu link có vẻ là trang CHI TIẾT → trả luôn
+        p0 = urlparse(link)
+        domain = p0.netloc.lower()
+
+        # alonhadat: xử lý riêng
+        if "alonhadat.com.vn" in domain:
+            return _sub_links_alonhadat(link, soup, max_links)
+
+        # Domain khác: heuristic chung
+        # Nếu đã là chi tiết → trả luôn
         if DETAIL_PATTERNS.search(p0.path or ""):
             return [_canon_url(link)]
 
-        # Còn lại: coi là trang DANH SÁCH → gom link chi tiết bên trong
+        # Danh mục → gom link chi tiết trong cùng domain
+        base_domain = p0.netloc
+        base_path = (p0.path.rstrip("/") or "/")
+
         for a in soup.find_all("a", href=True):
             full = urljoin(link, a["href"])
             p = urlparse(full)
-            if p.scheme not in ("http", "https") or p.netloc != base_domain:
-                continue
-            # Ưu tiên link chi tiết theo pattern
-            if DETAIL_PATTERNS.search(p.path or ""):
-                cu = _canon_url(full)
-                if cu not in subs:
-                    subs.append(cu)
-                    if len(subs) >= max_links:
-                        break
-
-        # Nếu vẫn chưa đủ, nới lỏng: lấy thêm các link có từ khóa “bán/nhà/căn hộ…”
-        if len(subs) < max_links:
-            for a in soup.find_all("a", href=True):
-                if len(subs) >= max_links:
-                    break
-                full = urljoin(link, a["href"])
-                p = urlparse(full)
-                if p.scheme not in ("http", "https") or p.netloc != base_domain:
-                    continue
-                if LIST_PATTERNS.search(p.path or "") or "/chi-tiet" in (p.path or ""):
+            if (
+                p.scheme in ("http", "https")
+                and p.netloc == base_domain
+                and (p.path or "/").startswith(base_path)
+            ):
+                if DETAIL_PATTERNS.search(p.path or "") or LIST_PATTERNS.search(p.path or ""):
                     cu = _canon_url(full)
                     if cu not in subs:
                         subs.append(cu)
+                        if len(subs) >= max_links:
+                            break
 
         return subs[:max_links]
+
     except Exception:
         return []
 
