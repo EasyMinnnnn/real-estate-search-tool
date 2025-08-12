@@ -39,7 +39,7 @@ def _canon_url(s: str) -> str:
 
 
 def _parse_buckets():
-    raw = os.getenv("BATCH_BUCKETS", "10,8,6,4,4")  # hơi nới domain đầu
+    raw = os.getenv("BATCH_BUCKETS", "10,8,6,4,4")
     try:
         buckets = [int(x.strip()) for x in raw.split(",") if x.strip()]
         return buckets or [10, 8, 6, 4, 4]
@@ -133,7 +133,6 @@ def get_top_links(query: str, num_links: int = 5) -> list:
 
 
 # ===== Heuristic nhận diện link chi tiết vs link danh sách =====
-# Chỉ nhận trang chi tiết khi có ID rõ ràng (tránh gom nhầm trang danh mục)
 DETAIL_PATTERNS = re.compile(
     r"(?:-pr\d+|-\d{6,}\.(?:htm|html)$|/tin-\d+)",
     re.IGNORECASE,
@@ -146,25 +145,18 @@ LIST_PATTERNS = re.compile(
 
 
 def _sub_links_alonhadat(link: str, soup: BeautifulSoup, max_links: int) -> list:
-    """
-    Dành riêng cho alonhadat:
-    - Nếu link chi tiết (đuôi -<id>.html) -> trả luôn.
-    - Nếu link danh mục -> quét h3 a, div.content-item a, rồi fallback toàn bộ <a>.
-    """
     subs: list[str] = []
     p0 = urlparse(link)
     domain = p0.netloc.lower()
     path0 = p0.path or "/"
 
-    # Trang chi tiết
     if re.search(r"-\d{6,}\.(?:htm|html)$", path0):
         return [_canon_url(link)]
 
-    # Trang danh mục -> gom link chi tiết
     detail_pat = re.compile(r"/[a-z0-9-]+-\d{6,}\.(?:htm|html)$", re.IGNORECASE)
 
     candidates = []
-    candidates.extend(soup.select("h3 a[href]"))              # tiêu đề tin
+    candidates.extend(soup.select("h3 a[href]"))
     candidates.extend(soup.select("div.content-item a[href]"))
     candidates.extend(soup.select("a[href].vip, a[href].title"))
 
@@ -184,7 +176,6 @@ def _sub_links_alonhadat(link: str, soup: BeautifulSoup, max_links: int) -> list
         if len(subs) >= max_links:
             return subs[:max_links]
 
-    # fallback quét toàn bộ <a>
     if len(subs) < max_links:
         for a in soup.find_all("a", href=True):
             _try_add(a)
@@ -249,6 +240,40 @@ def get_sub_links(link: str, max_links: int = 5) -> list:
         return []
 
 
+# ===== Tăng cường: tìm trực tiếp link chi tiết theo domain =====
+def _enrich_detail_links(query: str, domain: str, need: int, already: set[str]) -> list[str]:
+    """
+    Gọi Google CSE với các truy vấn chuyên biệt để lấy trực tiếp link CHI TIẾT của 1 domain.
+    Dùng cho batdongsan.com.vn đặc biệt.
+    """
+    patterns = [
+        f'{query} site:{domain} inurl:-pr',
+        f'{query} site:{domain} inurl:/tin-',
+        f'{query} site:{domain} "pr"',
+        f'{query} site:{domain} inurl:.html',
+        f'site:{domain} inurl:-pr',          # thêm 1 lượt tổng quát
+    ]
+    found: list[str] = []
+    for q in patterns:
+        if len(found) >= need:
+            break
+        try:
+            links = _call_google(q, num_links=10)
+        except Exception:
+            continue
+        for u in links:
+            if u in already:
+                continue
+            p = urlparse(u)
+            if DETAIL_PATTERNS.search(p.path or ""):
+                cu = _canon_url(u)
+                if cu not in already and cu not in found:
+                    found.append(cu)
+                    if len(found) >= need:
+                        break
+    return found[:need]
+
+
 # ===== Helpers nhận diện để “đào sâu 1 cấp” khi cần =====
 def _is_detail(url: str) -> bool:
     p = urlparse(url)
@@ -256,10 +281,8 @@ def _is_detail(url: str) -> bool:
 
 
 def _drill_detail_links_if_needed(url: str, max_links: int = 5) -> list[str]:
-    """Nếu url là danh mục -> lấy các link chi tiết bên trong; nếu đã là chi tiết -> trả luôn."""
     if _is_detail(url):
         return [_canon_url(url)]
-    # danh mục → đào sâu 1 cấp
     return get_sub_links(url, max_links=max_links)
 
 
@@ -269,43 +292,63 @@ def search_google(query: str, target_total: int = 30) -> list:
     target_total=30 để đủ 3 lần bấm (10 tin/lần).
     """
     # tăng mặc định để đủ nguồn lấy 10 tin ngay lượt đầu
-    max_top = int(os.getenv("MAX_TOP_LINKS", "8") or "8")
+    max_top = int(os.getenv("MAX_TOP_LINKS", "12") or "12")
     top_links = get_top_links(query, num_links=max_top)
     if not top_links:
         return []
 
     buckets = _parse_buckets()[: len(top_links)]
-    results = []
-    seen = set()
+    detail_links: list[str] = []
+    seen_links: set[str] = set()
 
+    # 1) gom link chi tiết từ top_links
     for i, link in enumerate(top_links):
-        # lấy link chi tiết trực tiếp từ link top (hoặc đào sâu 1 cấp nếu cần)
         first_level = _drill_detail_links_if_needed(link, max_links=buckets[i] if i < len(buckets) else 5)
-
-        # Nếu vì lý do gì vẫn chưa có link chi tiết, thử gom thêm từ chính các first_level
         subs: list[str] = []
         for u in first_level:
             subs.extend(_drill_detail_links_if_needed(u, max_links=5))
+        for s in subs:
+            cs = _canon_url(s)
+            if cs not in seen_links:
+                seen_links.add(cs)
+                detail_links.append(cs)
+            if len(detail_links) >= target_total:
+                break
+        if len(detail_links) >= target_total:
+            break
 
-        for sub in subs:
-            if sub in seen:
-                continue
-            seen.add(sub)
-            try:
-                info = extract_info_generic(sub)
-            except Exception as e:
-                info = {
-                    "link": sub,
-                    "title": f"❌ Lỗi khi trích xuất: {e}",
-                    "price": "",
-                    "area": "",
-                    "description": "",
-                    "image": "",
-                    "contact": "",
-                }
-            results.append(info)
-            if len(results) >= target_total:
-                return results
-        time.sleep(0.25)  # lịch sự với site
+    # 2) nếu chưa đủ, enrich riêng cho batdongsan (và các domain whitelist nếu có)
+    if len(detail_links) < target_total:
+        wl = list(_parse_whitelist()) or ["batdongsan.com.vn", "alonhadat.com.vn"]
+        # Ưu tiên batdongsan trước
+        wl = sorted(wl, key=lambda d: 0 if "batdongsan.com.vn" in d else 1)
+        need = target_total - len(detail_links)
+        for dom in wl:
+            more = _enrich_detail_links(query, dom, need, seen_links)
+            for u in more:
+                if u not in seen_links:
+                    seen_links.add(u)
+                    detail_links.append(u)
+            need = target_total - len(detail_links)
+            if need <= 0:
+                break
 
+    # 3) extract
+    results = []
+    for sub in detail_links[:target_total]:
+        try:
+            info = extract_info_generic(sub)
+        except Exception as e:
+            info = {
+                "link": sub,
+                "title": f"❌ Lỗi khi trích xuất: {e}",
+                "price": "",
+                "area": "",
+                "description": "",
+                "image": "",
+                "contact": "",
+            }
+        results.append(info)
+
+    time.sleep(0.25)
     return results
