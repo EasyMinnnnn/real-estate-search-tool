@@ -20,6 +20,15 @@ ALONHADAT_STORAGE = os.getenv("ALONHADAT_STORAGE", "auth_alonhadat.json")
 
 SUPPORTED_DOMAINS = ("batdongsan.com.vn", "alonhadat.com.vn")
 
+REQ_HEADERS = {
+    "User-Agent": USER_AGENT,
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Referer": "https://www.google.com/",
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache",
+}
+
 
 # ===== Public entry =====
 def extract_info_generic(link: str) -> dict:
@@ -28,15 +37,22 @@ def extract_info_generic(link: str) -> dict:
     Hỗ trợ batdongsan.com.vn & alonhadat.com.vn. Domain khác -> thông báo.
     """
     domain = get_domain(link)
-
     if not any(d in domain for d in SUPPORTED_DOMAINS):
         return _unsupported(link)
 
     try:
         # Cho phép tắt Playwright qua biến môi trường
+        source = "requests"
+        html = ""
+
         if USE_PLAYWRIGHT:
-            html = fetch_with_playwright(link, domain)
-            source = "playwright"
+            try:
+                html = fetch_with_playwright(link, domain)
+                source = "playwright"
+            except Exception:
+                # Không cài được Chromium hoặc launch lỗi -> dùng requests
+                html = fetch_with_requests(link)
+                source = "requests"
         else:
             html = fetch_with_requests(link)
             source = "requests"
@@ -115,7 +131,6 @@ def fetch_with_playwright(link: str, domain: str) -> str:
             try:
                 if "batdongsan.com.vn" in domain:
                     page.wait_for_load_state("networkidle", timeout=30000)
-                    # bất kỳ trong các selector dưới xuất hiện là ổn
                     page.wait_for_selector("h1, h1.re__pr-title, meta[property='og:title']", timeout=15000)
                 elif "alonhadat.com.vn" in domain:
                     page.wait_for_load_state("networkidle", timeout=30000)
@@ -134,15 +149,19 @@ def fetch_with_playwright(link: str, domain: str) -> str:
 
 def fetch_with_requests(link: str) -> str:
     """Fallback nếu Playwright lỗi/timeout hoặc bị tắt."""
-    resp = requests.get(link, timeout=25, headers={"User-Agent": USER_AGENT})
+    resp = requests.get(link, timeout=25, headers=REQ_HEADERS)
+    # Nếu bị chặn -> dùng cache luôn
+    if resp.status_code in (403, 410, 451):
+        raise requests.HTTPError(f"Blocked with status {resp.status_code}")
     resp.raise_for_status()
     return resp.text
 
 
 def extract_from_google_cache(link: str) -> dict:
+    # strip=1 + vwsrc=0 cho HTML gọn hơn, ít script
     encoded_url = quote(link, safe="")
-    cache_url = f"https://webcache.googleusercontent.com/search?q=cache:{encoded_url}"
-    resp = requests.get(cache_url, timeout=25, headers={"User-Agent": USER_AGENT})
+    cache_url = f"https://webcache.googleusercontent.com/search?q=cache:{encoded_url}&strip=1&vwsrc=0"
+    resp = requests.get(cache_url, timeout=25, headers=REQ_HEADERS)
     resp.raise_for_status()
 
     soup = BeautifulSoup(resp.text, "lxml") if _has_lxml() else BeautifulSoup(resp.text, "html.parser")
@@ -165,7 +184,7 @@ def parse_batdongsan(link: str, soup: BeautifulSoup) -> dict:
     - Title: h1.re__pr-title (fallback: h1, og:title)
     - Giá/Diện tích: span.value; hoặc theo label; hoặc regex
     - Mô tả: div.re__section-body (fallback: .re__pr-description / .re__content)
-    - Ảnh: ưu tiên og:image, sau đó ảnh chính trong trang
+    - Ảnh: ưu tiên og:image, sau đó ảnh chính trong trang (kể cả data-src)
     - Liên hệ: a.re__contact-name (fallback: .re__contact .name, tel:, regex phone)
     """
     if DEBUG_HTML:
@@ -196,7 +215,9 @@ def parse_batdongsan(link: str, soup: BeautifulSoup) -> dict:
     # 2) cấu trúc mới theo label (VD: “Giá”, “Diện tích”)
     if not price or not area:
         # tìm cặp label-value phổ biến
-        for row in soup.select(".re__pr-shortinfo, .re__pr-config, .re__info, .re__pr-specs, .re__list, ul li"):
+        for row in soup.select(
+            ".re__pr-shortinfo, .re__pr-config, .re__info, .re__pr-specs, .re__list, ul li, .re__box-info"
+        ):
             t = _txt(row)
             if not price and re.search(r"\b(Giá|Price)\b", t, re.I):
                 # lấy cụm sau 'Giá'
@@ -224,6 +245,7 @@ def parse_batdongsan(link: str, soup: BeautifulSoup) -> dict:
     desc = (
         soup.find("div", class_="re__section-body")
         or soup.select_one("section .re__section-body, .re__pr-description, .re__content, .re__section-content")
+        or soup.select_one("#article, .article, .post-content")
     )
     description = _txt(desc)
 
@@ -235,10 +257,12 @@ def parse_batdongsan(link: str, soup: BeautifulSoup) -> dict:
     if not image:
         img = (
             soup.select_one("img.pr-img")
-            or soup.select_one("img[src*='cloudfront'], img[src$='.jpg'], img[src$='.jpeg']")
+            or soup.select_one("img[data-src], img[src*='cloudfront'], img[src$='.jpg'], img[src$='.jpeg']")
         )
-        if img and img.has_attr("src"):
-            image = img["src"].strip()
+        if img:
+            src = img.get("src") or img.get("data-src") or ""
+            if src:
+                image = src.strip()
 
     # --- Liên hệ ---
     contact_name = ""
@@ -255,10 +279,10 @@ def parse_batdongsan(link: str, soup: BeautifulSoup) -> dict:
     if phone_tag:
         phone = phone_tag.get_text(strip=True) or phone_tag.get("href", "").replace("tel:", "")
     else:
-        # Fallback regex số điện thoại Việt Nam
-        m = re.search(r"(?:\+?84|0)(\d{9,10})\b", soup.get_text(" ", strip=True))
+        # Fallback regex số điện thoại Việt Nam (chấp nhận chấm/cách)
+        m = re.search(r"(?:\+?84|0)[\s\.]*(\d[\d\s\.]{8,12}\d)", soup.get_text(" ", strip=True))
         if m:
-            phone = (m.group(0) or "").strip()
+            phone = re.sub(r"[^\d]+", "", m.group(0))  # lọc chỉ còn số
 
     contact_full = contact_name
     if phone:
@@ -323,8 +347,8 @@ def parse_alonhadat(link: str, soup: BeautifulSoup) -> dict:
     # ----- Ảnh (chuẩn hoá URL) -----
     image = ""
     img = soup.find("img", id="limage") or soup.select_one("#limage, .gallery img, .images img, img")
-    if img and img.has_attr("src"):
-        image = _abs_url(link, img["src"])
+    if img and (img.get("src") or img.get("data-src")):
+        image = _abs_url(link, img.get("src") or img.get("data-src"))
     else:
         og = soup.find("meta", property="og:image")
         if og and og.get("content"):
@@ -339,9 +363,9 @@ def parse_alonhadat(link: str, soup: BeautifulSoup) -> dict:
     if phone_tag:
         phone = phone_tag.get_text(strip=True) or phone_tag.get("href", "").replace("tel:", "")
     else:
-        m = re.search(r"(?:\+?84|0)(\d{9,10})\b", soup.get_text(" ", strip=True))
+        m = re.search(r"(?:\+?84|0)[\s\.]*(\d[\d\s\.]{8,12}\d)", soup.get_text(" ", strip=True))
         if m:
-            phone = (m.group(0) or "").strip()
+            phone = re.sub(r"[^\d]+", "", m.group(0))
 
     contact_full = contact_name
     if phone:
