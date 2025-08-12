@@ -25,12 +25,10 @@ def _get_env():
 
 
 def _canon_url(s: str) -> str:
-    """Chuẩn hóa URL để khử trùng lặp: bỏ fragment/query theo heuristic đơn giản."""
+    """Chuẩn hóa URL để khử trùng lặp: bỏ fragment/query, bỏ '/' cuối."""
     try:
         p = urlparse(s)
-        # bỏ query/fragment để tránh trùng cùng bài nhưng khác tracking params
         p = p._replace(query="", fragment="")
-        # chuẩn hóa path: bỏ dấu "/" cuối
         path = p.path or "/"
         if path != "/" and path.endswith("/"):
             path = path[:-1]
@@ -40,25 +38,36 @@ def _canon_url(s: str) -> str:
         return s
 
 
+def _parse_buckets():
+    raw = os.getenv("BATCH_BUCKETS", "10,8,6,4,4")  # hơi nới 1 chút ở domain đầu
+    try:
+        buckets = [int(x.strip()) for x in raw.split(",") if x.strip()]
+        return buckets or [10, 8, 6, 4, 4]
+    except Exception:
+        return [10, 8, 6, 4, 4]
+
+
 def _parse_whitelist():
-    """Lấy danh sách domain whitelist từ biến môi trường SITE_WHITELIST."""
-    wl_raw = os.getenv("SITE_WHITELIST", "").strip()
-    if not wl_raw:
+    raw = os.getenv("SITE_WHITELIST", "").strip()
+    if not raw:
         return set()
-    return {d.strip() for d in wl_raw.split(",") if d.strip()}
+    return {d.strip().lower() for d in raw.split(",") if d.strip()}
 
 
 def _call_google(query: str, num_links: int):
-    """Gọi Google CSE API, trả về danh sách link."""
+    """Gọi Google CSE API, trả về danh sách link (đã canon + dedup)."""
     api_key, cx = _get_env()
     url = "https://www.googleapis.com/customsearch/v1"
-    params = {"key": api_key, "cx": cx, "q": query, "num": num_links, "hl": "vi"}
+    params = {
+        "key": api_key,
+        "cx": cx,
+        "q": query,
+        "num": num_links,
+        "hl": "vi",
+        "gl": "vn",
+    }
     resp = requests.get(url, params=params, timeout=REQ_TIMEOUT)
-    try:
-        resp.raise_for_status()
-    except requests.HTTPError as e:
-        raise RuntimeError(f"Google API HTTP {resp.status_code}: {resp.text[:200]}") from e
-
+    resp.raise_for_status()
     data = resp.json()
     if "error" in data:
         msg = data["error"].get("message", "Unknown Google API error")
@@ -70,13 +79,13 @@ def _call_google(query: str, num_links: int):
         if link and link.startswith("http"):
             links.append(_canon_url(link))
 
-    # khử trùng lặp, giữ thứ tự
+    # dedup giữ thứ tự
     seen, dedup = set(), []
     for u in links:
         if u not in seen:
             seen.add(u)
             dedup.append(u)
-    return dedup
+    return dedup[:num_links]
 
 
 def get_top_links(query: str, num_links: int = 5) -> list:
@@ -107,8 +116,10 @@ def get_top_links(query: str, num_links: int = 5) -> list:
 
     # Try 2: bias theo whitelist hoặc mặc định
     if not wl:
-        wl = {"batdongsan.com.vn", "alonhadat.com.vn"}
-    links = _call_google(_bias(query), num_links)
+        wl = {"batdongsan.com.vn", "alonhadat.com.vn", "chotot.com", "muaban.net"}
+    # cập nhật hàm _bias sau khi wl có giá trị mặc định
+    add = " OR ".join(f"site:{d}" for d in wl)
+    links = _call_google(f"{query} {add}", num_links)
     if links:
         return links
 
@@ -122,39 +133,64 @@ def get_top_links(query: str, num_links: int = 5) -> list:
     return []
 
 
-def get_sub_links(link: str, max_links: int = 3) -> list:
+# ===== Heuristic nhận diện link chi tiết vs link danh sách =====
+DETAIL_PATTERNS = re.compile(
+    r"(?:/pr\d+|/tin-|\d{6,}\.(?:htm|html)$|/ban-|/nha-|/can-ho-|/chung-cu-|/bds-)",
+    re.IGNORECASE,
+)
+
+LIST_PATTERNS = re.compile(
+    r"(?:/ban-|/mua-ban-|/nha-dat|/tim-kiem|/search|/listing|/danh-sach|/bat-dong-san)",
+    re.IGNORECASE,
+)
+
+
+def get_sub_links(link: str, max_links: int = 5) -> list:
     """
-    Lấy link con cùng domain, sâu hơn, có pattern id tin (prxxxx, *.htm/*.html có số).
+    - Nếu link là trang DANH SÁCH: lấy các link CHI TIẾT ở trong.
+    - Nếu link đã là CHI TIẾT: trả luôn link đó (để không bỏ lỡ).
     """
     subs: list[str] = []
     try:
         resp = requests.get(link, headers={"User-Agent": UA}, timeout=REQ_TIMEOUT)
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "lxml")
-        base = urlparse(link)
-        base_domain, base_path = base.netloc, (base.path.rstrip("/") or "/")
+        p0 = urlparse(link)
+        base_domain = p0.netloc
 
+        # Nếu link có vẻ là trang CHI TIẾT → trả luôn
+        if DETAIL_PATTERNS.search(p0.path or ""):
+            return [_canon_url(link)]
+
+        # Còn lại: coi là trang DANH SÁCH → gom link chi tiết bên trong
         for a in soup.find_all("a", href=True):
             full = urljoin(link, a["href"])
             p = urlparse(full)
-            if (
-                p.scheme in ("http", "https")
-                and p.netloc == base_domain
-                and (p.path or "/").startswith(base_path)
-                and p.path != base_path
-            ):
-                # heuristic: có id bài hoặc đường dẫn dạng /ban-...
-                if (
-                    "pr" in p.path
-                    or re.search(r"/\d{6,}\.(?:htm|html)$", p.path)
-                    or "/ban-" in p.path
-                ):
+            if p.scheme not in ("http", "https") or p.netloc != base_domain:
+                continue
+            # Ưu tiên link chi tiết theo pattern
+            if DETAIL_PATTERNS.search(p.path or ""):
+                cu = _canon_url(full)
+                if cu not in subs:
+                    subs.append(cu)
+                    if len(subs) >= max_links:
+                        break
+
+        # Nếu vẫn chưa đủ, nới lỏng: lấy thêm các link có từ khóa “bán/nhà/căn hộ…”
+        if len(subs) < max_links:
+            for a in soup.find_all("a", href=True):
+                if len(subs) >= max_links:
+                    break
+                full = urljoin(link, a["href"])
+                p = urlparse(full)
+                if p.scheme not in ("http", "https") or p.netloc != base_domain:
+                    continue
+                if LIST_PATTERNS.search(p.path or "") or "/chi-tiet" in (p.path or ""):
                     cu = _canon_url(full)
                     if cu not in subs:
                         subs.append(cu)
-                        if len(subs) >= max_links:
-                            break
-        return subs
+
+        return subs[:max_links]
     except Exception:
         return []
 
@@ -164,14 +200,21 @@ def search_google(query: str, target_total: int = 30) -> list:
     Trả về list dict tin rao: title, price, area, description, image, contact, link.
     target_total=30 để đủ 3 lần bấm (10 tin/lần).
     """
-    top_links = get_top_links(query, num_links=5)
+    max_top = int(os.getenv("MAX_TOP_LINKS", "5") or "5")
+    top_links = get_top_links(query, num_links=max_top)
+    if not top_links:
+        return []
 
-    # Phân bổ số link con theo từng domain (tổng gần ~30)
-    buckets = [8, 8, 6, 4, 4]
-    results: list[dict] = []
-    for i, link in enumerate(top_links[:5]):
-        subs = get_sub_links(link, max_links=buckets[i])
+    buckets = _parse_buckets()[: len(top_links)]
+    results = []
+    seen = set()
+
+    for i, link in enumerate(top_links):
+        subs = get_sub_links(link, max_links=buckets[i] if i < len(buckets) else 5)
         for sub in subs:
+            if sub in seen:
+                continue
+            seen.add(sub)
             try:
                 info = extract_info_generic(sub)
             except Exception as e:
@@ -187,7 +230,6 @@ def search_google(query: str, target_total: int = 30) -> list:
             results.append(info)
             if len(results) >= target_total:
                 return results
-        # lịch sự với site: ngủ 300ms giữa các domain
-        time.sleep(0.3)
+        time.sleep(0.25)  # lịch sự với site
 
     return results
