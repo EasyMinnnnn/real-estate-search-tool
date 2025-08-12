@@ -55,37 +55,56 @@ def _parse_whitelist():
 
 
 def _call_google(query: str, num_links: int):
-    """Gọi Google CSE API, trả về danh sách link (đã canon + dedup)."""
+    """
+    Gọi Google CSE API và trả về danh sách link (đã canon + dedup).
+    TỰ PHÂN TRANG: API chỉ cho num <= 10 / request, nên lặp với start=1,11,21...
+    """
     api_key, cx = _get_env()
     url = "https://www.googleapis.com/customsearch/v1"
-    params = {
-        "key": api_key,
-        "cx": cx,
-        "q": query,
-        "num": num_links,
-        "hl": "vi",
-        "gl": "vn",
-    }
-    resp = requests.get(url, params=params, timeout=REQ_TIMEOUT)
-    resp.raise_for_status()
-    data = resp.json()
-    if "error" in data:
-        msg = data["error"].get("message", "Unknown Google API error")
-        raise RuntimeError(f"Google API error: {msg}")
 
+    want = max(1, int(num_links))
+    page_size = 10  # giới hạn cứng của API
+    start = 1
     links = []
-    for item in data.get("items", []):
-        link = item.get("link")
-        if link and link.startswith("http"):
-            links.append(_canon_url(link))
+    seen = set()
 
-    # dedup giữ thứ tự
-    seen, dedup = set(), []
-    for u in links:
-        if u not in seen:
-            seen.add(u)
-            dedup.append(u)
-    return dedup[:num_links]
+    while len(links) < want:
+        take = min(page_size, want - len(links))
+        params = {
+            "key": api_key,
+            "cx": cx,
+            "q": query,
+            "num": take,
+            "start": start,
+            "hl": "vi",
+            "gl": "vn",
+        }
+        resp = requests.get(url, params=params, timeout=REQ_TIMEOUT)
+        resp.raise_for_status()
+        data = resp.json()
+        if "error" in data:
+            msg = data["error"].get("message", "Unknown Google API error")
+            raise RuntimeError(f"Google API error: {msg}")
+
+        items = data.get("items", []) or []
+        if not items:
+            break
+
+        for item in items:
+            link = item.get("link")
+            if link and link.startswith("http"):
+                cu = _canon_url(link)
+                if cu not in seen:
+                    seen.add(cu)
+                    links.append(cu)
+
+        # tăng start cho trang tiếp theo
+        start += page_size
+        # an toàn: CSE thường tối đa ~100 kết quả
+        if start > 91:
+            break
+
+    return links[:want]
 
 
 def get_top_links(query: str, num_links: int = 5) -> list:
@@ -251,7 +270,7 @@ def _enrich_detail_links(query: str, domain: str, need: int, already: set[str]) 
         f'{query} site:{domain} inurl:/tin-',
         f'{query} site:{domain} "pr"',
         f'{query} site:{domain} inurl:.html',
-        f'site:{domain} inurl:-pr',          # thêm 1 lượt tổng quát
+        f'site:{domain} inurl:-pr',
     ]
     found: list[str] = []
     for q in patterns:
@@ -291,7 +310,6 @@ def search_google(query: str, target_total: int = 30) -> list:
     Trả về list dict tin rao: title, price, area, description, image, contact, link.
     target_total=30 để đủ 3 lần bấm (10 tin/lần).
     """
-    # tăng mặc định để đủ nguồn lấy 10 tin ngay lượt đầu
     max_top = int(os.getenv("MAX_TOP_LINKS", "12") or "12")
     top_links = get_top_links(query, num_links=max_top)
     if not top_links:
@@ -320,7 +338,6 @@ def search_google(query: str, target_total: int = 30) -> list:
     # 2) nếu chưa đủ, enrich riêng cho batdongsan (và các domain whitelist nếu có)
     if len(detail_links) < target_total:
         wl = list(_parse_whitelist()) or ["batdongsan.com.vn", "alonhadat.com.vn"]
-        # Ưu tiên batdongsan trước
         wl = sorted(wl, key=lambda d: 0 if "batdongsan.com.vn" in d else 1)
         need = target_total - len(detail_links)
         for dom in wl:
