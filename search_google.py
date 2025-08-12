@@ -57,6 +57,8 @@ def _parse_whitelist():
 def _call_google(query: str, num_links: int):
     """Gọi Google CSE API, trả về danh sách link (đã canon + dedup)."""
     api_key, cx = _get_env()
+    # Giới hạn num_links theo yêu cầu API Google (1–10)
+    num_links = max(1, min(num_links, 10))
     url = "https://www.googleapis.com/customsearch/v1"
     params = {
         "key": api_key,
@@ -79,7 +81,6 @@ def _call_google(query: str, num_links: int):
         if link and link.startswith("http"):
             links.append(_canon_url(link))
 
-    # dedup giữ thứ tự
     seen, dedup = set(), []
     for u in links:
         if u not in seen:
@@ -89,11 +90,6 @@ def _call_google(query: str, num_links: int):
 
 
 def get_top_links(query: str, num_links: int = 5) -> list:
-    """
-    Trả về tối đa num_links link từ Google CSE.
-    Nếu FORCE_SITE_BIAS=1 hoặc có SITE_WHITELIST -> thêm 'site:' ngay từ lần gọi đầu.
-    Nếu vẫn rỗng, thử lại các fallback.
-    """
     wl = _parse_whitelist()
     force_bias = os.getenv("FORCE_SITE_BIAS", "0") == "1"
 
@@ -103,18 +99,15 @@ def get_top_links(query: str, num_links: int = 5) -> list:
         add = " OR ".join(f"site:{d}" for d in wl)
         return f"{q} {add}"
 
-    # Try 1: nếu ép bias
     if force_bias and wl:
         links = _call_google(_bias(query), num_links)
         if links:
             return links
 
-    # Try 1 (không ép bias)
     links = _call_google(query, num_links)
     if links:
         return links
 
-    # Try 2: bias theo whitelist hoặc mặc định 4 domain phổ biến
     if not wl:
         wl = {"batdongsan.com.vn", "alonhadat.com.vn", "chotot.com", "muaban.net"}
     add = " OR ".join(f"site:{d}" for d in wl)
@@ -122,7 +115,6 @@ def get_top_links(query: str, num_links: int = 5) -> list:
     if links:
         return links
 
-    # Try 3: nới lỏng truy vấn (bỏ phần sau dấu phẩy)
     loose = query.split(",")[0].strip()
     if loose and loose != query:
         links = _call_google(loose, num_links)
@@ -132,7 +124,6 @@ def get_top_links(query: str, num_links: int = 5) -> list:
     return []
 
 
-# ===== Heuristic nhận diện link chi tiết vs link danh sách =====
 DETAIL_PATTERNS = re.compile(
     r"(?:-pr\d+|-\d{6,}\.(?:htm|html)$|/tin-\d+)",
     re.IGNORECASE,
@@ -186,20 +177,13 @@ def _sub_links_alonhadat(link: str, soup: BeautifulSoup, max_links: int) -> list
 
 
 def get_sub_links(link: str, max_links: int = 5) -> list:
-    """
-    - Nếu link là trang DANH SÁCH: lấy các link CHI TIẾT ở trong.
-    - Nếu link đã là CHI TIẾT: trả luôn link đó (KHÔNG fetch).
-    - Có tối ưu riêng cho alonhadat.com.vn.
-    """
     p0 = urlparse(link)
     domain = (p0.netloc or "").lower()
     path0 = p0.path or "/"
 
-    # 1) ĐÃ là link chi tiết -> trả luôn (tránh bị 403 khi fetch)
     if DETAIL_PATTERNS.search(path0):
         return [_canon_url(link)]
 
-    # 2) alonhadat: cần HTML để gỡ link chi tiết
     if "alonhadat.com.vn" in domain:
         try:
             resp = requests.get(link, headers={"User-Agent": UA}, timeout=REQ_TIMEOUT)
@@ -209,7 +193,6 @@ def get_sub_links(link: str, max_links: int = 5) -> list:
         except Exception:
             return []
 
-    # 3) Domain khác: cố gắng quét link chi tiết trong cùng danh mục (nếu fetch được)
     subs: list[str] = []
     try:
         resp = requests.get(link, headers={"User-Agent": UA}, timeout=REQ_TIMEOUT)
@@ -240,18 +223,13 @@ def get_sub_links(link: str, max_links: int = 5) -> list:
         return []
 
 
-# ===== Tăng cường: tìm trực tiếp link chi tiết theo domain =====
 def _enrich_detail_links(query: str, domain: str, need: int, already: set[str]) -> list[str]:
-    """
-    Gọi Google CSE với các truy vấn chuyên biệt để lấy trực tiếp link CHI TIẾT của 1 domain.
-    Dùng cho batdongsan.com.vn đặc biệt.
-    """
     patterns = [
         f'{query} site:{domain} inurl:-pr',
         f'{query} site:{domain} inurl:/tin-',
         f'{query} site:{domain} "pr"',
         f'{query} site:{domain} inurl:.html',
-        f'site:{domain} inurl:-pr',          # thêm 1 lượt tổng quát
+        f'site:{domain} inurl:-pr',
     ]
     found: list[str] = []
     for q in patterns:
@@ -274,7 +252,6 @@ def _enrich_detail_links(query: str, domain: str, need: int, already: set[str]) 
     return found[:need]
 
 
-# ===== Helpers nhận diện để “đào sâu 1 cấp” khi cần =====
 def _is_detail(url: str) -> bool:
     p = urlparse(url)
     return bool(DETAIL_PATTERNS.search(p.path or ""))
@@ -287,11 +264,6 @@ def _drill_detail_links_if_needed(url: str, max_links: int = 5) -> list[str]:
 
 
 def search_google(query: str, target_total: int = 30) -> list:
-    """
-    Trả về list dict tin rao: title, price, area, description, image, contact, link.
-    target_total=30 để đủ 3 lần bấm (10 tin/lần).
-    """
-    # tăng mặc định để đủ nguồn lấy 10 tin ngay lượt đầu
     max_top = int(os.getenv("MAX_TOP_LINKS", "12") or "12")
     top_links = get_top_links(query, num_links=max_top)
     if not top_links:
@@ -301,7 +273,6 @@ def search_google(query: str, target_total: int = 30) -> list:
     detail_links: list[str] = []
     seen_links: set[str] = set()
 
-    # 1) gom link chi tiết từ top_links
     for i, link in enumerate(top_links):
         first_level = _drill_detail_links_if_needed(link, max_links=buckets[i] if i < len(buckets) else 5)
         subs: list[str] = []
@@ -317,10 +288,8 @@ def search_google(query: str, target_total: int = 30) -> list:
         if len(detail_links) >= target_total:
             break
 
-    # 2) nếu chưa đủ, enrich riêng cho batdongsan (và các domain whitelist nếu có)
     if len(detail_links) < target_total:
         wl = list(_parse_whitelist()) or ["batdongsan.com.vn", "alonhadat.com.vn"]
-        # Ưu tiên batdongsan trước
         wl = sorted(wl, key=lambda d: 0 if "batdongsan.com.vn" in d else 1)
         need = target_total - len(detail_links)
         for dom in wl:
@@ -333,7 +302,6 @@ def search_google(query: str, target_total: int = 30) -> list:
             if need <= 0:
                 break
 
-    # 3) extract
     results = []
     for sub in detail_links[:target_total]:
         try:
