@@ -15,15 +15,17 @@ USER_AGENT = (
 )
 HEADLESS = os.getenv("PLAYWRIGHT_HEADLESS", "1") != "0"
 USE_PLAYWRIGHT = os.getenv("USE_PLAYWRIGHT", "1") != "0"
+DEBUG_HTML = os.getenv("DEBUG_HTML", "0") == "1"
 ALONHADAT_STORAGE = os.getenv("ALONHADAT_STORAGE", "auth_alonhadat.json")
 
 SUPPORTED_DOMAINS = ("batdongsan.com.vn", "alonhadat.com.vn")
 
 
+# ===== Public entry =====
 def extract_info_generic(link: str) -> dict:
     """
-    Trả về dict gồm: link, title, price, area, description, image, contact.
-    Hỗ trợ batdongsan.com.vn và alonhadat.com.vn. Domain khác trả về thông báo.
+    Trả về dict: link, title, price, area, description, image, contact.
+    Hỗ trợ batdongsan.com.vn & alonhadat.com.vn. Domain khác -> thông báo.
     """
     domain = get_domain(link)
 
@@ -37,7 +39,6 @@ def extract_info_generic(link: str) -> dict:
         else:
             html = fetch_with_requests(link)
 
-        # Ưu tiên parser lxml nếu có, rơi về html.parser khi thiếu
         soup = BeautifulSoup(html, "lxml") if _has_lxml() else BeautifulSoup(html, "html.parser")
 
         # CAPTCHA / Verify page?
@@ -53,7 +54,7 @@ def extract_info_generic(link: str) -> dict:
         return _unsupported(link)
 
     except Exception as e:
-        # Fallback: thử Google Cache; nếu vẫn lỗi thì trả thông điệp lỗi.
+        # Fallback: Google Cache; nếu vẫn lỗi thì trả thông điệp lỗi.
         try:
             return extract_from_google_cache(link)
         except Exception:
@@ -68,6 +69,7 @@ def extract_info_generic(link: str) -> dict:
             }
 
 
+# ===== Internals =====
 def _has_lxml() -> bool:
     try:
         import lxml  # noqa: F401
@@ -84,19 +86,19 @@ def fetch_with_playwright(link: str, domain: str) -> str:
         browser = p.chromium.launch(headless=HEADLESS)
         context_kwargs = {
             "user_agent": USER_AGENT,
-            "viewport": {"width": 1280, "height": 900},
+            "viewport": {"width": 1366, "height": 900},
         }
-
-        # Dùng storage_state cho alonhadat nếu có (đã tick CAPTCHA trước đó)
+        # Dùng storage_state cho alonhadat nếu có (đã pass CAPTCHA)
         if "alonhadat.com.vn" in domain and os.path.exists(ALONHADAT_STORAGE):
             context_kwargs["storage_state"] = ALONHADAT_STORAGE
 
         context = browser.new_context(**context_kwargs)
         page = context.new_page()
         try:
-            page.goto(link, timeout=45000, wait_until="domcontentloaded")
-            page.wait_for_load_state("networkidle", timeout=15000)
-            page.wait_for_timeout(1200)
+            page.goto(link, timeout=50000, wait_until="domcontentloaded")
+            # chờ mạng rảnh + một chút để JS render
+            page.wait_for_load_state("networkidle", timeout=25000)
+            page.wait_for_timeout(5000)
             html = page.content()
             return html
         except PWTimeout:
@@ -107,8 +109,8 @@ def fetch_with_playwright(link: str, domain: str) -> str:
 
 
 def fetch_with_requests(link: str) -> str:
-    """Fallback nhẹ nhàng nếu Playwright lỗi/timeout hoặc bị tắt."""
-    resp = requests.get(link, timeout=20, headers={"User-Agent": USER_AGENT})
+    """Fallback nếu Playwright lỗi/timeout hoặc bị tắt."""
+    resp = requests.get(link, timeout=25, headers={"User-Agent": USER_AGENT})
     resp.raise_for_status()
     return resp.text
 
@@ -116,10 +118,8 @@ def fetch_with_requests(link: str) -> str:
 def extract_from_google_cache(link: str) -> dict:
     encoded_url = quote(link, safe="")
     cache_url = f"https://webcache.googleusercontent.com/search?q=cache:{encoded_url}"
-
-    resp = requests.get(cache_url, timeout=20, headers={"User-Agent": USER_AGENT})
-    if resp.status_code != 200:
-        raise RuntimeError(f"Google Cache trả về mã lỗi {resp.status_code}")
+    resp = requests.get(cache_url, timeout=25, headers={"User-Agent": USER_AGENT})
+    resp.raise_for_status()
 
     soup = BeautifulSoup(resp.text, "lxml") if _has_lxml() else BeautifulSoup(resp.text, "html.parser")
 
@@ -134,6 +134,7 @@ def get_domain(url: str) -> str:
     return urlparse(url).netloc.lower()
 
 
+# ===== Parsers =====
 def parse_batdongsan(link: str, soup: BeautifulSoup) -> dict:
     """
     BĐS thường có:
@@ -142,96 +143,127 @@ def parse_batdongsan(link: str, soup: BeautifulSoup) -> dict:
     - Mô tả: div.re__section-body
     - Ảnh: img.pr-img
     - Liên hệ: a.re__contact-name
+    + Fallback selector/regex nếu thay đổi cấu trúc.
     """
-    title = soup.find("h1", class_="re__pr-title")
-    price_tag = soup.find_all("span", class_="value")
-    description = soup.find("div", class_="re__section-body")
-    contact = soup.find("a", class_="re__contact-name")
-    image = soup.find("img", class_="pr-img")
+    if DEBUG_HTML:
+        _dump_html(soup, prefix="bds")
 
-    price = price_tag[0].get_text(strip=True) if len(price_tag) > 0 else ""
-    area = price_tag[1].get_text(strip=True) if len(price_tag) > 1 else ""
+    # --- Title ---
+    title = soup.find("h1", class_="re__pr-title") or soup.select_one("h1")
+    title_text = title.get_text(strip=True) if title else ""
+
+    # --- Giá & Diện tích ---
+    price, area = "", ""
+    value_tags = soup.find_all("span", class_="value")
+    if value_tags:
+        price = value_tags[0].get_text(" ", strip=True) if len(value_tags) > 0 else ""
+        area = value_tags[1].get_text(" ", strip=True) if len(value_tags) > 1 else ""
+    if not price or not area:
+        # fallback quét theo label
+        text_all = soup.get_text(" ", strip=True)
+        if not price:
+            m = re.search(r"(Giá|Price)\s*[:\-]?\s*([^\s].{0,40}?)\s{2,}", text_all, re.I)
+            if m:
+                price = m.group(2).strip()
+        if not area:
+            m = re.search(r"(\d[\d\.,]*)\s*m(?:2|²)\b", text_all, re.I)
+            if m:
+                area = m.group(0)
+
+    # --- Mô tả ---
+    desc = (soup.find("div", class_="re__section-body")
+            or soup.select_one("section .re__section-body, .re__pr-description, .re__content"))
+    description = desc.get_text("\n", strip=True) if desc else ""
+
+    # --- Ảnh ---
+    img = (soup.find("img", class_="pr-img")
+           or soup.select_one("img[src*='cloudfront'], img[src*='.jpg'], img[src*='.jpeg']"))
+    image = img["src"].strip() if img and img.has_attr("src") else ""
+
+    # --- Liên hệ ---
+    contact = (soup.find("a", class_="re__contact-name")
+               or soup.select_one(".re__contact .re__contact-name, .contact .name, a[href^='tel:']"))
+    contact_name = contact.get_text(strip=True) if contact else ""
+    phone_tag = soup.find("a", href=lambda h: h and str(h).startswith("tel:"))
+    phone = phone_tag.get_text(strip=True) if phone_tag else ""
+
+    contact_full = contact_name
+    if phone:
+        contact_full = (contact_full + " - " + phone).strip(" -")
 
     return {
         "link": link,
-        "title": title.get_text(strip=True) if title else "",
+        "title": title_text,
         "price": price,
         "area": area,
-        "description": description.get_text(separator="\n").strip() if description else "",
-        "image": image["src"] if image and image.has_attr("src") else "",
-        "contact": contact.get_text(strip=True) if contact else "",
+        "description": description,
+        "image": image,
+        "contact": contact_full,
     }
-
-
-# ------- Alonhadat helpers -------
-def _abs_url(base: str, src: str) -> str:
-    try:
-        if not src:
-            return ""
-        return urljoin(base, src)
-    except Exception:
-        return src or ""
 
 
 def parse_alonhadat(link: str, soup: BeautifulSoup) -> dict:
     """
-    Trích xuất chi tiết từ trang alonhadat.com.vn
-    - Tiêu đề: <h1>
-    - Giá/DT: <span class="value"> (thường 2 phần tử đầu)
-    - Mô tả: <div class="detail text-content">
-    - Ảnh: <img id="limage"> (URL tương đối -> chuẩn hoá tuyệt đối)
-    - Liên hệ: <div class="name"> + <a href="tel:..."> (fallback regex)
+    alonhadat.com.vn:
+    - Title: <h1>
+    - Giá & Diện tích: <span class="value"> (2 cái đầu), có fallback label/regex
+    - Mô tả: <div class="detail text-content"> (fallback id=content / .description / .post-content)
+    - Ảnh: <img id="limage"> hoặc og:image; chuẩn hoá URL bằng urljoin
+    - Liên hệ: <div class="name"> và <a href="tel:..."> (regex fallback số ĐT)
     """
+    if DEBUG_HTML:
+        _dump_html(soup, prefix="alnd")
+
     # ----- Tiêu đề -----
-    title_el = soup.find("h1")
+    title_el = soup.find("h1") or soup.select_one("h1.title, h1.h1")
     title = title_el.get_text(strip=True) if title_el else ""
 
     # ----- Giá & Diện tích -----
+    price, area = "", ""
     value_tags = soup.find_all("span", class_="value")
-    price = value_tags[0].get_text(" ", strip=True) if len(value_tags) > 0 else ""
-    area = value_tags[1].get_text(" ", strip=True) if len(value_tags) > 1 else ""
+    if value_tags:
+        price = value_tags[0].get_text(" ", strip=True) if len(value_tags) > 0 else ""
+        area = value_tags[1].get_text(" ", strip=True) if len(value_tags) > 1 else ""
 
-    # Fallback nếu không tìm thấy theo span.value
-    if not price:
-        lbl = soup.find(string=re.compile(r"\bGiá\b", re.I))
-        if lbl and getattr(lbl, "parent", None):
-            nxt = lbl.parent.find_next(string=True)
-            if nxt:
-                price = str(nxt).strip()
-    if not area:
-        m = re.search(r"(\d[\d\.,]*)\s*m(?:2|²)\b", soup.get_text(" ", strip=True), re.I)
-        if m:
-            area = m.group(0).replace("  ", " ")
+    if not price or not area:
+        text_all = soup.get_text(" ", strip=True)
+        if not price:
+            # bắt cụm sau "Giá" ngắn gọn
+            m = re.search(r"Giá\s*[:\-]?\s*([^\s].{0,40}?)\s{2,}", text_all, re.I)
+            if m:
+                price = m.group(1).strip()
+        if not area:
+            # diện tích kiểu "180 m2", "180 m²"
+            m = re.search(r"(\d[\d\.,]*)\s*m(?:2|²)\b", text_all, re.I)
+            if m:
+                area = m.group(0)
 
     # ----- Mô tả -----
-    desc_el = soup.find("div", class_="detail text-content") or soup.select_one("div.detail.text-content")
-    if not desc_el:
-        desc_el = soup.select_one("div#content, div.description, div.post-content")
+    desc_el = (soup.find("div", class_="detail text-content")
+               or soup.select_one("div.detail.text-content")
+               or soup.select_one("div#content, div.description, div.post-content, .news-content, .content"))
     description = desc_el.get_text("\n", strip=True) if desc_el else ""
 
-    # ----- Ảnh -----
-    img = soup.find("img", id="limage")
+    # ----- Ảnh (chuẩn hoá URL) -----
     image = ""
+    img = soup.find("img", id="limage") or soup.select_one("#limage, .gallery img, .images img, img")
     if img and img.has_attr("src"):
         image = _abs_url(link, img["src"])
     else:
         og = soup.find("meta", property="og:image")
         if og and og.get("content"):
             image = _abs_url(link, og["content"])
-        else:
-            any_img = soup.select_one("div.images img, .image img, img")
-            if any_img and any_img.has_attr("src"):
-                image = _abs_url(link, any_img["src"])
 
     # ----- Liên hệ -----
-    name_el = soup.find("div", class_="name") or soup.select_one(".info-contact .name, .name a, .name span")
+    name_el = (soup.find("div", class_="name")
+               or soup.select_one(".info-contact .name, .contact .name, .name a, .name span"))
     contact_name = name_el.get_text(strip=True) if name_el else ""
     phone_tag = soup.find("a", href=lambda h: h and str(h).startswith("tel:"))
     phone = ""
     if phone_tag:
         phone = phone_tag.get_text(strip=True) or phone_tag.get("href", "").replace("tel:", "")
     else:
-        # Fallback regex số điện thoại trong toàn trang
+        # Fallback regex số điện thoại Việt Nam
         m = re.search(r"(0\d{9,10})", soup.get_text(" ", strip=True))
         if m:
             phone = m.group(1)
@@ -252,6 +284,26 @@ def parse_alonhadat(link: str, soup: BeautifulSoup) -> dict:
 
 
 # ===== Helpers =====
+def _abs_url(base: str, src: str) -> str:
+    try:
+        if not src:
+            return ""
+        return urljoin(base, src)
+    except Exception:
+        return src or ""
+
+
+def _dump_html(soup: BeautifulSoup, prefix: str) -> None:
+    """Ghi HTML ra file để debug (bật với DEBUG_HTML=1)."""
+    try:
+        path = f"/tmp/{prefix}_debug.html"
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(soup.prettify())
+        print(f"[DEBUG] Saved HTML -> {path}")
+    except Exception as e:
+        print(f"[DEBUG] Save HTML failed: {e}")
+
+
 def _unsupported(link: str) -> dict:
     return {
         "link": link,
