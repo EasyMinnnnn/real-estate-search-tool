@@ -197,28 +197,34 @@ def _sub_links_alonhadat(link: str, soup: BeautifulSoup, max_links: int) -> list
 def get_sub_links(link: str, max_links: int = 5) -> list:
     """
     - Nếu link là trang DANH SÁCH: lấy các link CHI TIẾT ở trong.
-    - Nếu link đã là CHI TIẾT: trả luôn link đó.
+    - Nếu link đã là CHI TIẾT: trả luôn link đó (KHÔNG fetch).
     - Có tối ưu riêng cho alonhadat.com.vn.
     """
+    p0 = urlparse(link)
+    domain = (p0.netloc or "").lower()
+    path0 = p0.path or "/"
+
+    # 1) ĐÃ là link chi tiết -> trả luôn (tránh bị 403 khi fetch)
+    if DETAIL_PATTERNS.search(path0):
+        return [_canon_url(link)]
+
+    # 2) alonhadat: cần HTML để gỡ link chi tiết
+    if "alonhadat.com.vn" in domain:
+        try:
+            resp = requests.get(link, headers={"User-Agent": UA}, timeout=REQ_TIMEOUT)
+            resp.raise_for_status()
+            soup = BeautifulSoup(resp.text, "lxml")
+            return _sub_links_alonhadat(link, soup, max_links)
+        except Exception:
+            return []
+
+    # 3) Domain khác: cố gắng quét link chi tiết trong cùng danh mục (nếu fetch được)
     subs: list[str] = []
     try:
         resp = requests.get(link, headers={"User-Agent": UA}, timeout=REQ_TIMEOUT)
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "lxml")
 
-        p0 = urlparse(link)
-        domain = p0.netloc.lower()
-
-        # alonhadat: xử lý riêng
-        if "alonhadat.com.vn" in domain:
-            return _sub_links_alonhadat(link, soup, max_links)
-
-        # Domain khác: heuristic chung
-        # Nếu đã là chi tiết → trả luôn
-        if DETAIL_PATTERNS.search(p0.path or ""):
-            return [_canon_url(link)]
-
-        # Danh mục → gom link chi tiết trong cùng domain
         base_domain = p0.netloc
         base_path = (p0.path.rstrip("/") or "/")
 
@@ -262,7 +268,8 @@ def search_google(query: str, target_total: int = 30) -> list:
     Trả về list dict tin rao: title, price, area, description, image, contact, link.
     target_total=30 để đủ 3 lần bấm (10 tin/lần).
     """
-    max_top = int(os.getenv("MAX_TOP_LINKS", "5") or "5")
+    # tăng mặc định để đủ nguồn lấy 10 tin ngay lượt đầu
+    max_top = int(os.getenv("MAX_TOP_LINKS", "8") or "8")
     top_links = get_top_links(query, num_links=max_top)
     if not top_links:
         return []
