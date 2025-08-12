@@ -1,22 +1,31 @@
 import os
 import math
 import time
+import html
 import requests
 import streamlit as st
 from search_google import search_google
 
 # ========= Đảm bảo Playwright Chromium có sẵn (cài 1 lần) =========
+# Thử install-deps trước, rồi install chromium. Nếu lỗi -> cảnh báo và fallback requests/cache.
 try:
     if "_pw_ready" not in st.session_state:
         import subprocess, sys
-        # chỉ cài nếu không bị tắt Playwright
+
         if os.getenv("USE_PLAYWRIGHT", "1") != "0":
+            try:
+                subprocess.run(
+                    [sys.executable, "-m", "playwright", "install-deps", "chromium"],
+                    check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                )
+            except Exception as e:
+                st.warning(f"Install-deps Chromium thất bại (bỏ qua): {e}")
+
             subprocess.run(
-                [sys.executable, "-m", "playwright", "install", "chromium", "--with-deps"],
-                check=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+                [sys.executable, "-m", "playwright", "install", "chromium"],
+                check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             )
+
         st.session_state._pw_ready = True
 except Exception as e:
     st.warning(f"Không cài được Playwright Chromium (sẽ dùng requests/cache nếu cần): {e}")
@@ -37,6 +46,18 @@ TARGET_TOTAL = BATCH_SIZE * MAX_BATCHES
 st.set_page_config(page_title="Tra cứu BĐS (Streamlit)", layout="wide")
 st.title("🔎 Tra cứu bất động sản (Streamlit)")
 
+# ===== CSS cho card (ảnh trái, nội dung phải) =====
+st.markdown("""
+<style>
+.card { padding: 0.75rem; border: 1px solid #eaeaea; border-radius: 12px; }
+.card-img { width:100%; height:180px; object-fit:cover; border-radius:10px; background:#f3f5f7; }
+.card-title { font-weight:700; font-size:1rem; line-height:1.2; min-height:3.0em; margin:0 0 .25rem 0; }
+.card-meta { font-size:.95rem; margin:.1rem 0; }
+.card-desc { color:#444; display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; min-height:4.4em; }
+.card-contact { font-weight:500; margin-top:.25rem; }
+</style>
+""", unsafe_allow_html=True)
+
 # --- Sidebar: cấu hình & chẩn đoán ---
 with st.sidebar:
     st.header("Cấu hình")
@@ -53,7 +74,10 @@ with st.sidebar:
         os.environ["GOOGLE_CX"] = cx
 
     st.caption("Playwright chạy headless (đổi sang 0 để debug giao diện Chromium).")
-    headless = st.checkbox("HEADLESS", value=(os.getenv("PLAYWRIGHT_HEADLESS", "1") == "1"))
+    headless = st.checkbox(
+        "HEADLESS",
+        value=(os.getenv("PLAYWRIGHT_HEADLESS", "1") == "1")
+    )
     os.environ["PLAYWRIGHT_HEADLESS"] = "1" if headless else "0"
 
     disable_pw = st.checkbox(
@@ -91,6 +115,38 @@ if "results" not in st.session_state:
 if "batch" not in st.session_state:
     st.session_state.batch = 0
 
+# --- Helper render 1 card: ảnh trái - nội dung phải ---
+def render_card(item: dict):
+    title = html.escape(item.get("title", "") or "")
+    price = html.escape(item.get("price", "") or "")
+    area  = html.escape(item.get("area", "") or "")
+    desc  = item.get("description", "") or ""
+    if len(desc) > 300:  # cắt trước khi clamp để đồng đều
+        desc = desc[:300].rstrip() + "…"
+    desc = html.escape(desc)
+    contact = html.escape(item.get("contact", "") or "")
+    link = item.get("link")
+    image = item.get("image")
+
+    with st.container(border=True):
+        left, right = st.columns([1, 1.6], vertical_alignment="top")
+        with left:
+            if image:
+                st.markdown(f'<img class="card-img" src="{image}">', unsafe_allow_html=True)
+            else:
+                st.markdown('<div class="card-img"></div>', unsafe_allow_html=True)
+        with right:
+            st.markdown(f'<div class="card-title">{title}</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="card-meta"><strong>Giá:</strong> {price}</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="card-meta"><strong>Diện tích:</strong> {area}</div>', unsafe_allow_html=True)
+            if desc:
+                st.markdown(f'<div class="card-desc">{desc}</div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="card-contact"><strong>Liên hệ:</strong> {contact}</div>', unsafe_allow_html=True)
+            if item.get("_source"):
+                st.caption(f"source: {item['_source']}")
+            if link:
+                st.link_button("🔗 Xem chi tiết", link)
+
 # --- Form tìm kiếm ---
 with st.form("search_form", clear_on_submit=False):
     q = st.text_input("Nhập từ khoá", st.session_state.query or "Bán nhà Quận 3, Hồ Chí Minh")
@@ -106,7 +162,6 @@ with st.form("search_form", clear_on_submit=False):
                     # lấy sẵn tối đa 30 tin (để bấm tăng dần mỗi lần 10)
                     res = search_google(st.session_state.query, target_total=TARGET_TOTAL)
                 except TypeError:
-                    # fallback nếu hàm cũ không có tham số target_total
                     res = search_google(st.session_state.query)
                 except Exception as e:
                     st.error(f"Lỗi khi gọi search_google: {e}")
@@ -120,33 +175,17 @@ if st.session_state.query:
     show_n = min(st.session_state.batch * BATCH_SIZE, total)
     has_more = (st.session_state.batch < MAX_BATCHES) and (show_n < total)
 
-    # dạng lưới 3 cột
-    cols_per_row = 3
+    # Lưới card (mỗi card ảnh trái, nội dung phải). Mặc định 2 cột cho dễ đọc.
+    cols_per_row = int(os.getenv("CARDS_PER_ROW", "2"))
     rows = math.ceil(show_n / cols_per_row)
     idx = 0
     for _ in range(rows):
-        cols = st.columns(cols_per_row)
+        cols = st.columns(cols_per_row, vertical_alignment="top")
         for c in cols:
             if idx >= show_n:
                 break
-            item = st.session_state.results[idx]
             with c:
-                if item.get("image"):
-                    st.image(item["image"], use_container_width=True)
-                st.markdown(f"**{item.get('title','')}**")
-                st.write(f"**Giá:** {item.get('price','')}")
-                st.write(f"**Diện tích:** {item.get('area','')}")
-                if item.get("description"):
-                    desc = item["description"]
-                    if len(desc) > 240:
-                        desc = desc[:240].rstrip() + "…"
-                    st.write(desc)
-                st.write(f"**Liên hệ:** {item.get('contact','')}")
-                # Nhãn debug nguồn dữ liệu
-                if item.get("_source"):
-                    st.caption(f"source: {item['_source']}")
-                if item.get("link"):
-                    st.link_button("🔗 Xem chi tiết", item["link"])
+                render_card(st.session_state.results[idx])
             idx += 1
 
     st.caption(f"Đang hiển thị {show_n}/{total} tin.")
