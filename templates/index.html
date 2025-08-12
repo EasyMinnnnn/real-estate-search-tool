@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
+    <meta charset="utf-8">
     <title>Tra cứu BĐS</title>
     <style>
         .card {
@@ -11,16 +12,21 @@
             width: 300px;
             float: left;
         }
-        img {
-            max-width: 100%;
-            height: auto;
-        }
+        img { max-width: 100%; height: auto; }
     </style>
 </head>
 <body>
     <h2>Tra cứu bất động sản</h2>
-    <form method="POST">
-        <input type="text" name="query" placeholder="VD: Bán nhà Lê Văn Sỹ, Quận 3" required style="width:300px">
+
+    <form method="POST" action="/">
+        <input
+            type="text"
+            name="query"
+            placeholder="VD: Bán nhà Lê Văn Sỹ, Quận 3"
+            required
+            style="width:300px"
+            value="{{ query or '' }}"
+        >
         <button type="submit">Tìm kiếm</button>
     </form>
 
@@ -29,17 +35,23 @@
         <div>
             {% for item in results %}
                 <div class="card">
-                    <img src="{{ item.image }}" alt="Hình ảnh">
+                    {% if item.image %}<img src="{{ item.image }}" alt="Hình ảnh">{% endif %}
                     <h4>{{ item.title }}</h4>
                     <p><strong>Giá:</strong> {{ item.price }}</p>
                     <p><strong>Diện tích:</strong> {{ item.area }}</p>
                     <p><strong>Mô tả:</strong> {{ item.description }}</p>
-                    <p><strong>Liên hệ:</strong> {{ item.phone }}</p>
-                    <a href="{{ item.link }}" target="_blank">🔗 Xem chi tiết</a>
+                    <p><strong>Liên hệ:</strong> {{ item.contact }}</p>
+                    <a href="{{ item.link }}" target="_blank" rel="noopener">🔗 Xem chi tiết</a>
                 </div>
             {% endfor %}
         </div>
         <div style="clear: both;"></div>
+
+        {% if has_more %}
+            <form method="POST" action="/crawl_more" style="margin-top: 10px;">
+                <button type="submit">Crawl thêm 10 tin</button>
+            </form>
+        {% endif %}
     {% endif %}
 </body>
 </html>
