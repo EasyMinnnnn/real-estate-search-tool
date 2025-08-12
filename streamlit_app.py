@@ -5,6 +5,24 @@ import requests
 import streamlit as st
 from search_google import search_google
 
+# ========= Đảm bảo Playwright Chromium có sẵn (chạy 1 lần) =========
+# Tránh cài lặp lại ở mỗi rerun bằng session_state flag
+try:
+    if "_pw_ready" not in st.session_state:
+        import subprocess, sys
+        # Cho phép skip nếu người dùng chủ động tắt Playwright
+        if os.getenv("USE_PLAYWRIGHT", "1") != "0":
+            subprocess.run(
+                [sys.executable, "-m", "playwright", "install", "chromium", "--with-deps"],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+        st.session_state._pw_ready = True
+except Exception as e:
+    # Không chặn app nếu cài thất bại; crawler sẽ fallback requests + cache
+    st.warning(f"Không cài được Playwright Chromium (sẽ dùng requests/cache nếu cần): {e}")
+
 # ========= Load secrets -> env (nếu có) =========
 for k in ("GOOGLE_API_KEY", "GOOGLE_CX", "PLAYWRIGHT_HEADLESS", "USE_PLAYWRIGHT"):
     try:
@@ -126,6 +144,9 @@ if st.session_state.query:
                         desc = desc[:240].rstrip() + "…"
                     st.write(desc)
                 st.write(f"**Liên hệ:** {item.get('contact','')}")
+                # Nhãn debug nguồn dữ liệu (playwright/requests/google_cache)
+                if item.get("_source"):
+                    st.caption(f"source: {item['_source']}")
                 if item.get("link"):
                     st.link_button("🔗 Xem chi tiết", item["link"])
             idx += 1
