@@ -133,8 +133,9 @@ def get_top_links(query: str, num_links: int = 5) -> list:
 
 
 # ===== Heuristic nhận diện link chi tiết vs link danh sách =====
+# Chỉ nhận trang chi tiết khi có ID rõ ràng (tránh gom nhầm trang danh mục)
 DETAIL_PATTERNS = re.compile(
-    r"(?:/pr\d+|/tin-|\d{6,}\.(?:htm|html)$|/ban-|/nha-|/can-ho-|/chung-cu-|/bds-)",
+    r"(?:-pr\d+|-\d{6,}\.(?:htm|html)$|/tin-\d+)",
     re.IGNORECASE,
 )
 
@@ -228,18 +229,32 @@ def get_sub_links(link: str, max_links: int = 5) -> list:
                 p.scheme in ("http", "https")
                 and p.netloc == base_domain
                 and (p.path or "/").startswith(base_path)
+                and DETAIL_PATTERNS.search(p.path or "")
             ):
-                if DETAIL_PATTERNS.search(p.path or "") or LIST_PATTERNS.search(p.path or ""):
-                    cu = _canon_url(full)
-                    if cu not in subs:
-                        subs.append(cu)
-                        if len(subs) >= max_links:
-                            break
+                cu = _canon_url(full)
+                if cu not in subs:
+                    subs.append(cu)
+                    if len(subs) >= max_links:
+                        break
 
         return subs[:max_links]
 
     except Exception:
         return []
+
+
+# ===== Helpers nhận diện để “đào sâu 1 cấp” khi cần =====
+def _is_detail(url: str) -> bool:
+    p = urlparse(url)
+    return bool(DETAIL_PATTERNS.search(p.path or ""))
+
+
+def _drill_detail_links_if_needed(url: str, max_links: int = 5) -> list[str]:
+    """Nếu url là danh mục -> lấy các link chi tiết bên trong; nếu đã là chi tiết -> trả luôn."""
+    if _is_detail(url):
+        return [_canon_url(url)]
+    # danh mục → đào sâu 1 cấp
+    return get_sub_links(url, max_links=max_links)
 
 
 def search_google(query: str, target_total: int = 30) -> list:
@@ -257,7 +272,14 @@ def search_google(query: str, target_total: int = 30) -> list:
     seen = set()
 
     for i, link in enumerate(top_links):
-        subs = get_sub_links(link, max_links=buckets[i] if i < len(buckets) else 5)
+        # lấy link chi tiết trực tiếp từ link top (hoặc đào sâu 1 cấp nếu cần)
+        first_level = _drill_detail_links_if_needed(link, max_links=buckets[i] if i < len(buckets) else 5)
+
+        # Nếu vì lý do gì vẫn chưa có link chi tiết, thử gom thêm từ chính các first_level
+        subs: list[str] = []
+        for u in first_level:
+            subs.extend(_drill_detail_links_if_needed(u, max_links=5))
+
         for sub in subs:
             if sub in seen:
                 continue
