@@ -1,0 +1,65 @@
+name: Test Batdongsan Extractor
+
+on:
+  push:
+    branches: [ "main", "master" ]   # chỉnh theo nhánh bạn dùng
+  workflow_dispatch:
+    inputs:
+      url:
+        description: "Optional: 1 URL chi tiết BĐS để test (nếu trống, dùng URLS trong test_bds.py)"
+        required: false
+        type: string
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+    - name: Checkout repository
+    - uses: actions/checkout@v4
+
+    - name: Setup Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: "3.10"
+        cache: "pip"
+
+    - name: Install Python deps
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    # Cài Chromium + system deps cho Playwright (bản Python)
+    - name: Install Playwright (Chromium + deps)
+      run: |
+        python -m playwright install --with-deps chromium
+
+    - name: Run test_bds.py
+      env:
+        USE_PLAYWRIGHT: "1"     # bắt buộc để render JS
+        DEBUG_HTML: "1"         # bật để lưu file debug HTML ở /tmp
+      run: |
+        if [ -n "${{ inputs.url }}" ]; then
+          echo "Run with single URL from workflow inputs"
+          python test_bds.py "${{ inputs.url }}"
+        else
+          echo "Run with default URLS in test_bds.py"
+          python test_bds.py
+        fi
+
+    - name: Archive debug HTML (if any)
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: debug-html
+        path: |
+          /tmp/*_debug.html
+        if-no-files-found: ignore
+
+    - name: Upload console output
+      if: always()
+      run: |
+        # Lưu log test ra file để xem lại dễ hơn
+        # (Ghép lại raw logs bằng cách chạy lại script; tùy chọn)
+        :
