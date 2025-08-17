@@ -131,7 +131,9 @@ def fetch_with_playwright(link: str, domain: str) -> str:
             try:
                 if "batdongsan.com.vn" in domain:
                     page.wait_for_load_state("networkidle", timeout=30000)
-                    page.wait_for_selector("h1, h1.re__pr-title, meta[property='og:title']", timeout=15000)
+                    # Ưu tiên selector mới bạn cung cấp
+                    page.wait_for_selector("#product-detail-web > h1", timeout=15000)
+                    page.wait_for_selector("#product-detail-web .re__pr-short-info", timeout=15000)
                 elif "alonhadat.com.vn" in domain:
                     page.wait_for_load_state("networkidle", timeout=30000)
                     page.wait_for_selector("h1, #limage, meta[property='og:title']", timeout=15000)
@@ -180,12 +182,8 @@ def get_domain(url: str) -> str:
 # ===== Parsers =====
 def parse_batdongsan(link: str, soup: BeautifulSoup) -> dict:
     """
-    BĐS thường có:
-    - Title: h1.re__pr-title (fallback: h1, og:title)
-    - Giá/Diện tích: span.value; hoặc theo label; hoặc regex
-    - Mô tả: div.re__section-body (fallback: .re__pr-description / .re__content)
-    - Ảnh: ưu tiên og:image, sau đó ảnh chính trong trang (kể cả data-src)
-    - Liên hệ: a.re__contact-name (fallback: .re__contact .name, tel:, regex phone)
+    Batdongsan – ưu tiên selector mới (#product-detail-web ...) do bạn F12 cung cấp
+    rồi fallback về logic cũ/regex nếu thiếu.
     """
     if DEBUG_HTML:
         _dump_html(soup, prefix="bds")
@@ -193,34 +191,49 @@ def parse_batdongsan(link: str, soup: BeautifulSoup) -> dict:
     def _txt(el) -> str:
         return el.get_text(" ", strip=True) if el else ""
 
+    root = soup.select_one("#product-detail-web")
+
     # --- Title ---
-    title = soup.find("h1", class_="re__pr-title") or soup.select_one("h1")
-    title_text = _txt(title)
+    title_text = ""
+    if root:
+        h1 = root.select_one("> h1")
+        title_text = _txt(h1)
+
     if not title_text:
-        ogt = soup.find("meta", property="og:title")
-        if ogt and ogt.get("content"):
-            title_text = ogt["content"].strip()
+        # fallback cũ
+        title = soup.find("h1", class_="re__pr-title") or soup.select_one("h1")
+        title_text = _txt(title)
+        if not title_text:
+            ogt = soup.find("meta", property="og:title")
+            if ogt and ogt.get("content"):
+                title_text = ogt["content"].strip()
 
     # --- Giá & Diện tích ---
     price, area = "", ""
+    if root:
+        short = root.select_one("div.re__pr-short-info.entrypoint-v1.js__pr-short-info")
+        if short:
+            price_el = short.select_one("> div:nth-child(1) > span.value")
+            area_el  = short.select_one("> div:nth-child(2) > span.value")
+            price = _txt(price_el) or price
+            area  = _txt(area_el)  or area
 
-    # 1) cấu trúc cũ
-    value_tags = soup.find_all("span", class_="value")
-    if value_tags:
-        if not price and len(value_tags) > 0:
-            price = _txt(value_tags[0])
-        if not area and len(value_tags) > 1:
-            area = _txt(value_tags[1])
-
-    # 2) cấu trúc mới theo label (VD: “Giá”, “Diện tích”)
+    # Fallback: cấu trúc cũ <span.value>
     if not price or not area:
-        # tìm cặp label-value phổ biến
+        value_tags = soup.find_all("span", class_="value")
+        if value_tags:
+            if not price and len(value_tags) > 0:
+                price = _txt(value_tags[0])
+            if not area and len(value_tags) > 1:
+                area = _txt(value_tags[1])
+
+    # Fallback: theo label/regex
+    if not price or not area:
         for row in soup.select(
             ".re__pr-shortinfo, .re__pr-config, .re__info, .re__pr-specs, .re__list, ul li, .re__box-info"
         ):
             t = _txt(row)
             if not price and re.search(r"\b(Giá|Price)\b", t, re.I):
-                # lấy cụm sau 'Giá'
                 m = re.search(r"(Giá|Price)\s*[:\-]?\s*([^\s].{0,50}?)($|\s{2,})", t, re.I)
                 if m:
                     price = m.group(2).strip()
@@ -229,7 +242,6 @@ def parse_batdongsan(link: str, soup: BeautifulSoup) -> dict:
                 if m2:
                     area = m2.group(0)
 
-    # 3) regex quét toàn trang
     if not price or not area:
         text_all = soup.get_text(" ", strip=True)
         if not price:
@@ -242,12 +254,17 @@ def parse_batdongsan(link: str, soup: BeautifulSoup) -> dict:
                 area = m.group(0)
 
     # --- Mô tả ---
-    desc = (
-        soup.find("div", class_="re__section-body")
-        or soup.select_one("section .re__section-body, .re__pr-description, .re__content, .re__section-content")
-        or soup.select_one("#article, .article, .post-content")
-    )
-    description = _txt(desc)
+    description = ""
+    if root:
+        desc = root.select_one("div.re__section.re__pr-description.js__section.js__li-description > div")
+        description = _txt(desc)
+    if not description:
+        desc = (
+            soup.find("div", class_="re__section-body")
+            or soup.select_one("section .re__section-body, .re__pr-description, .re__content, .re__section-content")
+            or soup.select_one("#article, .article, .post-content")
+        )
+        description = _txt(desc)
 
     # --- Ảnh ---
     image = ""
@@ -255,34 +272,45 @@ def parse_batdongsan(link: str, soup: BeautifulSoup) -> dict:
     if ogimg and ogimg.get("content"):
         image = ogimg["content"].strip()
     if not image:
+        # selector ảnh bạn cung cấp (khi swiper đã render)
+        img_css = (
+            "body > div.re__main > div.re__ldp.re__main-content-layout.re__ldp-extend.js__main-container "
+            "> div.re__main-content > div.re__pr-container.cplus-4940_report-button.pr-details.pr-container.vip-normal "
+            "> div.re__pr-media-slide.js__pr-media-slide > div.re__media-preview.js__media-preview.swiper-container "
+            "> ul > li.swiper-slide.js__media-item-container.vertical.swiper-slide-active > div.re__overlay.js__overlay > img"
+        )
+        img = soup.select_one(img_css)
+        if img and (img.get("src") or img.get("data-src")):
+            image = (img.get("src") or img.get("data-src")).strip()
+    if not image:
+        # fallback ảnh chung
         img = (
             soup.select_one("img.pr-img")
             or soup.select_one("img[data-src], img[src*='cloudfront'], img[src$='.jpg'], img[src$='.jpeg']")
         )
         if img:
-            src = img.get("src") or img.get("data-src") or ""
-            if src:
-                image = src.strip()
+            image = (img.get("src") or img.get("data-src") or "").strip()
 
     # --- Liên hệ ---
     contact_name = ""
     phone = ""
 
-    contact = (
-        soup.find("a", class_="re__contact-name")
-        or soup.select_one(".re__contact .re__contact-name, .contact .name, .re__contact .name")
-        or soup.select_one(".contact .name, .contact-name, .re__contact-name")
+    # Tên agent theo selector mới
+    agent_name_css = (
+        "div.re__main-sidebar .box-vreaa-award.pro-agent-award.js__pa-contact-box.contact-fixed "
+        "div.re__agent-infor.re__agent-name > a"
     )
-    contact_name = _txt(contact)
+    name_el = soup.select_one(agent_name_css)
+    contact_name = _txt(name_el)
 
-    phone_tag = soup.find("a", href=lambda h: h and str(h).startswith("tel:"))
-    if phone_tag:
-        phone = phone_tag.get_text(strip=True) or phone_tag.get("href", "").replace("tel:", "")
+    # Số điện thoại: ưu tiên tel:, nếu không có thì regex
+    tel = soup.find("a", href=lambda h: h and str(h).startswith("tel:"))
+    if tel:
+        phone = tel.get_text(strip=True) or tel.get("href", "").replace("tel:", "")
     else:
-        # Fallback regex số điện thoại Việt Nam (chấp nhận chấm/cách)
         m = re.search(r"(?:\+?84|0)[\s\.]*(\d[\d\s\.]{8,12}\d)", soup.get_text(" ", strip=True))
         if m:
-            phone = re.sub(r"[^\d]+", "", m.group(0))  # lọc chỉ còn số
+            phone = re.sub(r"[^\d]+", "", m.group(0))
 
     contact_full = contact_name
     if phone:
