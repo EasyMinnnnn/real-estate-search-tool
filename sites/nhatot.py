@@ -15,7 +15,7 @@ except Exception:
         "Referer": "https://www.google.com/",
     }
 
-# ===== CSS selector (bạn đã cung cấp) + rút gọn =====
+# ===== CSS selector (đã cung cấp) + rút gọn =====
 _TITLE_SEL_LONG = "#__next > div > div.container.pty-container-detail > div.ct-detail.ao6jgem > div > div.c1uglbk9 > div.col-md-8.no-padding.d17dfbtj > div > div:nth-child(2) > div > div > div > div.df0dbrp > div.d49myw8 > h1"
 _TITLE_SEL_SHORT = "div.pty-container-detail h1, h1"
 
@@ -38,18 +38,30 @@ _NAME_SEL_LONG = ("#__next > div > div.container.pty-container-detail > div.ct-d
                   "> div.SellerInfo_nameBounder__Nzf1W > a > div > div.SellerInfo_flexDiv___8piT")
 _NAME_SEL_SHORT = "[class*='SellerInfo_nameBounder'] a [class*='SellerInfo_flexDiv'], [class*='SellerInfo'] a"
 
-# ✅ Phone nằm trong nút “Hiện số” (span trong button) – theo selector bạn gửi
-_PHONE_SEL_LONG = (
+# Phone trong nút “Hiện số” (khi có)
+_PHONE_BTN_LONG = (
     "#__next > div > div.container.pty-container-detail > div.ct-detail.ao6jgem > div > "
     "div.c1uglbk9 > div.col-md-4.no-padding.dtView.r1a38bue > div > div:nth-child(2) > "
     "div.d-lg-block.d-none.r4vrt5z > div.LeadButton_wrapperLeadButtonDesktop__7S80M > "
     "div.LeadButton_showPhoneButton__t3T08 > div > div > button > div > span"
 )
-# rút gọn: mọi showPhone button + fallback tel:
-_PHONE_SEL_SHORT = (
+_PHONE_BTN_SHORT = (
     "div.LeadButton_showPhoneButton__t3T08 button span, "
+    "div[class*='LeadButton_showPhoneButton'] button span, "
     "button[class*='showPhone'] span, "
     "a[href^='tel:']"
+)
+
+# ✅ Phone dạng che trong phần nội dung (không cần click)
+_PHONE_MASK_SEL_LONG = (
+    "#__next > div > div.container.pty-container-detail > div.ct-detail.ao6jgem > div > "
+    "div.c1uglbk9 > div.col-md-8.no-padding.d17dfbtj > div > div:nth-child(4) > "
+    "div > div:nth-child(2) > div > div > div"
+)
+# rút gọn để cover biến thể
+_PHONE_MASK_SEL_SHORT = (
+    "div.ct-detail div.col-md-8 div:nth-child(4) div > div:nth-child(2) div div div, "
+    "div[class*='adBody'] div div div"
 )
 
 # ---------- Helpers ----------
@@ -58,6 +70,13 @@ def _txt(el) -> str:
 
 def _clean_phone(s: str) -> str:
     return re.sub(r"[^\d+]", "", s or "")
+
+def _clean_phone_mask(s: str) -> str:
+    """Giữ số, +, khoảng trắng và dấu * để không làm mất dạng '096367 ***'."""
+    s = s or ""
+    s = re.sub(r"[^0-9+* ]", "", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
 
 def _first(*vals: Optional[str]) -> str:
     for v in vals:
@@ -185,7 +204,6 @@ def _from_gateway(list_id: str) -> Dict[str, str]:
         # area
         area = ad.get("size") or ad.get("square")
         if not area:
-            # parameters: [{key:'size', value:'60 m2'}, ...]
             params = ad.get("parameters") or []
             if isinstance(params, list):
                 for p in params:
@@ -230,14 +248,30 @@ def parse(link: str, html_or_soup) -> dict:
         if img:
             image = (img.get("src") or img.get("data-src") or "").strip()
 
-    name  = _first(_txt(soup.select_one(_NAME_SEL_LONG)), _txt(soup.select_one(_NAME_SEL_SHORT)))
+    # ===== Contact =====
+    name = _first(_txt(soup.select_one(_NAME_SEL_LONG)), _txt(soup.select_one(_NAME_SEL_SHORT)))
 
-    # ✅ Ưu tiên lấy số từ span của nút “Hiện số” (fetchers đã click), rồi tới tel:, rồi regex
-    phone = _clean_phone(_first(_txt(soup.select_one(_PHONE_SEL_LONG)), _txt(soup.select_one(_PHONE_SEL_SHORT))))
+    # (A) Ưu tiên số dạng che ở khu nội dung (không cần click)
+    mask_el = soup.select_one(_PHONE_MASK_SEL_LONG) or soup.select_one(_PHONE_MASK_SEL_SHORT)
+    phone = ""
+    if mask_el:
+        raw = _clean_phone_mask(_txt(mask_el))
+        # Lấy chuỗi có dạng: 0xxx... kèm dấu *
+        m = re.search(r"(?:\+?84|0)\d{2,}\s*\*+", raw)
+        phone = m.group(0) if m else raw if ("*" in raw and any(ch.isdigit() for ch in raw)) else ""
+
+    # (B) Nếu chưa có, thử span trong nút/anchor tel:
+    if not phone:
+        phone = _clean_phone(_first(
+            _txt(soup.select_one(_PHONE_BTN_LONG)),
+            _txt(soup.select_one(_PHONE_BTN_SHORT))
+        ))
     if not phone:
         tel = soup.find("a", href=lambda h: h and str(h).startswith("tel:"))
         if tel:
             phone = _clean_phone(tel.get_text(strip=True) or tel.get("href", "").replace("tel:", ""))
+
+    # (C) Fallback regex toàn trang (khi số lộ dạng text)
     if not phone:
         m = re.search(r"(?:\+?84|0)\d{8,11}", soup.get_text(" ", strip=True))
         if m:
@@ -258,9 +292,11 @@ def parse(link: str, html_or_soup) -> dict:
     desc  = _first(desc,  nd.get("description"))
     image = _first(image, nd.get("image"))
     name  = _first(name,  nd.get("name"))
-    phone = _first(phone, nd.get("phone"))
+    # giữ phone nếu đã có mask, nếu chưa thì mượn từ ND
+    if not phone:
+        phone = _first(phone, nd.get("phone"))
 
-    # 4) Fallback API gateway nếu vẫn thiếu
+    # 4) Fallback API gateway nếu vẫn thiếu trường chính
     if not title or not price or not desc or not image:
         list_id = _extract_list_id(link, soup)
         if list_id:
@@ -271,7 +307,8 @@ def parse(link: str, html_or_soup) -> dict:
             desc  = _first(desc,  gd.get("description"))
             image = _first(image, gd.get("image"))
             name  = _first(name,  gd.get("name"))
-            phone = _first(phone, gd.get("phone"))
+            if not phone:
+                phone = _first(phone, gd.get("phone"))
 
     # Fallback dò area từ toàn trang
     if not area:
