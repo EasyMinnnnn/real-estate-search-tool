@@ -11,7 +11,6 @@ from fetchers import get_html
 from sites import pick_site
 
 # ========= Đảm bảo Playwright Chromium có sẵn (cài 1 lần) =========
-# Thử install-deps trước, rồi install chromium. Nếu lỗi -> cảnh báo và fallback requests/cache.
 try:
     if "_pw_ready" not in st.session_state:
         import subprocess, sys
@@ -44,13 +43,13 @@ for k in ("GOOGLE_API_KEY", "GOOGLE_CX", "PLAYWRIGHT_HEADLESS", "USE_PLAYWRIGHT"
 
 # --- cấu hình ---
 BATCH_SIZE = 10
-MAX_BATCHES = 3          # tối đa 30 tin
+MAX_BATCHES = 3
 TARGET_TOTAL = BATCH_SIZE * MAX_BATCHES
 
 st.set_page_config(page_title="Tra cứu BĐS (Streamlit)", layout="wide")
 st.title("🔎 Tra cứu bất động sản (Streamlit)")
 
-# ===== CSS cho card (ảnh trái, nội dung phải) =====
+# ===== CSS cho card =====
 st.markdown("""
 <style>
 .card { padding: 0.75rem; border: 1px solid #eaeaea; border-radius: 12px; }
@@ -62,7 +61,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- Sidebar: cấu hình & chẩn đoán ---
+# --- Sidebar ---
 with st.sidebar:
     st.header("Cấu hình")
 
@@ -71,7 +70,6 @@ with st.sidebar:
     )
     cx = st.text_input("GOOGLE_CX", os.getenv("GOOGLE_CX") or "")
 
-    # Ghi lại vào env để search_google đọc mỗi lần
     if api:
         os.environ["GOOGLE_API_KEY"] = api
     if cx:
@@ -79,8 +77,7 @@ with st.sidebar:
 
     st.caption("Playwright chạy headless (đổi sang 0 để debug giao diện Chromium).")
     headless = st.checkbox(
-        "HEADLESS",
-        value=(os.getenv("PLAYWRIGHT_HEADLESS", "1") == "1")
+        "HEADLESS", value=(os.getenv("PLAYWRIGHT_HEADLESS", "1") == "1")
     )
     os.environ["PLAYWRIGHT_HEADLESS"] = "1" if headless else "0"
 
@@ -92,7 +89,6 @@ with st.sidebar:
     os.environ["USE_PLAYWRIGHT"] = "0" if disable_pw else "1"
 
     st.divider()
-    # Chẩn đoán Google API nhanh
     if st.button("Test Google API"):
         params = {
             "key": os.getenv("GOOGLE_API_KEY", ""),
@@ -108,10 +104,7 @@ with st.sidebar:
         except Exception as e:
             st.error(f"Lỗi gọi Google API: {e}")
 
-    st.caption(f"API key loaded: {'GOOGLE_API_KEY' in os.environ}")
-    st.caption(f"CX loaded: {'GOOGLE_CX' in os.environ}")
-
-# --- Khởi tạo state ---
+# --- State ---
 if "query" not in st.session_state:
     st.session_state.query = ""
 if "results" not in st.session_state:
@@ -119,13 +112,13 @@ if "results" not in st.session_state:
 if "batch" not in st.session_state:
     st.session_state.batch = 0
 
-# --- Helper render 1 card: ảnh trái - nội dung phải ---
+# --- Render card ---
 def render_card(item: dict):
     title = html.escape(item.get("title", "") or "")
     price = html.escape(item.get("price", "") or "")
     area  = html.escape(item.get("area", "") or "")
     desc  = item.get("description", "") or ""
-    if len(desc) > 300:  # cắt trước khi clamp để đồng đều
+    if len(desc) > 300:
         desc = desc[:300].rstrip() + "…"
     desc = html.escape(desc)
     contact = html.escape(item.get("contact", "") or "")
@@ -151,7 +144,7 @@ def render_card(item: dict):
             if link:
                 st.link_button("🔗 Xem chi tiết", link)
 
-# --- Form tìm kiếm (Google CSE) ---
+# --- Form search ---
 with st.form("search_form", clear_on_submit=False):
     q = st.text_input("Nhập từ khoá", st.session_state.query or "Bán nhà Quận 3, Hồ Chí Minh")
     submitted = st.form_submit_button("Tìm kiếm")
@@ -163,7 +156,6 @@ with st.form("search_form", clear_on_submit=False):
             st.session_state.batch = 1
             with st.spinner("Đang tìm kiếm và gom link…"):
                 try:
-                    # lấy sẵn tối đa 30 tin (để bấm tăng dần mỗi lần 10)
                     res = search_google(st.session_state.query, target_total=TARGET_TOTAL)
                 except TypeError:
                     res = search_google(st.session_state.query)
@@ -179,7 +171,6 @@ if st.session_state.query:
     show_n = min(st.session_state.batch * BATCH_SIZE, total)
     has_more = (st.session_state.batch < MAX_BATCHES) and (show_n < total)
 
-    # Lưới card (mỗi card ảnh trái, nội dung phải). Mặc định 2 cột cho dễ đọc.
     cols_per_row = int(os.getenv("CARDS_PER_ROW", "2"))
     rows = math.ceil(show_n / cols_per_row)
     idx = 0
@@ -194,7 +185,6 @@ if st.session_state.query:
 
     st.caption(f"Đang hiển thị {show_n}/{total} tin.")
 
-    # Nút Crawl thêm
     c1, c2 = st.columns([1, 3])
     with c1:
         if has_more and st.button("Crawl thêm 10 tin"):
@@ -202,7 +192,6 @@ if st.session_state.query:
             time.sleep(0.1)
             st.rerun()
 
-    # Làm mới
     with c2:
         if st.button("Làm mới"):
             st.session_state.batch = 0
@@ -210,20 +199,16 @@ if st.session_state.query:
             st.session_state.query = ""
             st.rerun()
 
-    # Gợi ý nếu không có kết quả
     if total == 0:
-        st.info(
-            "Không có kết quả. Kiểm tra lại CSE (Search the entire web), quota Custom Search JSON API, "
-            "hoặc thử truy vấn hẹp hơn: `site:batdongsan.com.vn \"Bán nhà Quận 3\"`."
-        )
+        st.info("Không có kết quả. Thử lại với `site:batdongsan.com.vn \"Bán nhà Quận 3\"`.")
 
-# ================== 🔬 Test 1 URL (per-site) ==================
+# ================== 🔬 Test 1 URL ==================
 st.divider()
 st.subheader("🔬 Test 1 URL (theo từng site)")
 
 def _strategy_default_for(host: str) -> str:
     if "batdongsan.com.vn" in host:
-        return "cloudscraper"  # site này hay 403 nếu dùng requests
+        return "cloudscraper"
     return "requests"
 
 with st.form("test_one_url_form", clear_on_submit=False):
@@ -252,7 +237,6 @@ if submit:
     if not test_url.strip():
         st.warning("Nhập URL trước đã.")
     else:
-        # lấy parser theo domain
         picked = pick_site(test_url)
         if not picked:
             st.error("❌ Domain này chưa được hỗ trợ trong 'sites/'.")
@@ -264,19 +248,18 @@ if submit:
                 with st.spinner("Đang tải HTML…"):
                     html_text = get_html(test_url, use_strategy)
 
+                from bs4 import BeautifulSoup
                 with st.spinner("Đang trích xuất…"):
                     try:
-                        # parser kiểu mới: parse(link, html_text)
                         data = parser(test_url, html_text)
                     except TypeError:
-                         # fallback: parser kiểu cũ nhận BeautifulSoup
-                        from bs4 import BeautifulSoup
-                         data = parser(test_url, BeautifulSoup(html_text, "lxml"))
-                     data["_source"] = use_strategy
+                        data = parser(test_url, BeautifulSoup(html_text, "lxml"))
+                    data["_source"] = use_strategy
+
                 render_card(data)
 
                 if show_raw:
                     short = html_text[:5000] + ("… (truncated)" if len(html_text) > 5000 else "")
                     st.code(short, language="html")
             except Exception as e:
-                st.error(f"Lỗi test: {e}. Hãy thử strategy khác (ví dụ cloudscraper/playwright).")
+                st.error(f"Lỗi test: {e}. Hãy thử strategy khác (cloudscraper/playwright).")
