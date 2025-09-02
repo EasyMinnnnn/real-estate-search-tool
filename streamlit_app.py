@@ -129,7 +129,11 @@ def render_card(item: dict):
         left, right = st.columns([1, 1.6], vertical_alignment="top")
         with left:
             if image:
-                st.markdown(f'<img class="card-img" src="{image}">', unsafe_allow_html=True)
+                # Ưu tiên server-side fetch để tránh bị chặn hotlink/referer
+                try:
+                    st.image(image, use_column_width=True)
+                except Exception:
+                    st.markdown(f'<img class="card-img" src="{html.escape(image)}">', unsafe_allow_html=True)
             else:
                 st.markdown('<div class="card-img"></div>', unsafe_allow_html=True)
         with right:
