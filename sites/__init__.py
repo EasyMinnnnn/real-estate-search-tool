@@ -8,7 +8,8 @@ from typing import Callable, Tuple, Dict
 from . import alonhadat
 from . import batdongsan
 from . import nhatot
-from . import muaban  # <-- thêm muaban
+from . import muaban
+from . import i_batdongsan  # <-- thêm i-batdongsan (module dùng dấu _)
 
 SITE_REGISTRY: Dict[str, Tuple[Callable, str]] = {
     "alonhadat.com.vn": (
@@ -26,6 +27,10 @@ SITE_REGISTRY: Dict[str, Tuple[Callable, str]] = {
     "muaban.net": (
         getattr(muaban, "parse"),
         getattr(muaban, "DEFAULT_STRATEGY", "playwright"),
+    ),
+    "i-batdongsan.com": (
+        getattr(i_batdongsan, "parse"),
+        getattr(i_batdongsan, "DEFAULT_STRATEGY", "requests"),
     ),
 }
 
