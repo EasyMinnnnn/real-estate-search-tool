@@ -265,9 +265,14 @@ if submit:
                     html_text = get_html(test_url, use_strategy)
 
                 with st.spinner("Đang trích xuất…"):
-                    data = parser(test_url, html_text)
-                    data["_source"] = use_strategy
-
+                    try:
+                        # parser kiểu mới: parse(link, html_text)
+                        data = parser(test_url, html_text)
+                    except TypeError:
+                         # fallback: parser kiểu cũ nhận BeautifulSoup
+                        from bs4 import BeautifulSoup
+                         data = parser(test_url, BeautifulSoup(html_text, "lxml"))
+                     data["_source"] = use_strategy
                 render_card(data)
 
                 if show_raw:
