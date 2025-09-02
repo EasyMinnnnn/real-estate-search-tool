@@ -206,12 +206,6 @@ if st.session_state.query:
 st.divider()
 st.subheader("🔬 Test 1 URL (theo từng site)")
 
-def _strategy_default_for(host: str) -> str:
-    # Dự phòng nếu site chưa đăng ký trong SITE_REGISTRY
-    if "batdongsan.com.vn" in host:
-        return "playwright"  # đổi sang playwright để tránh 403
-    return "requests"
-
 with st.form("test_one_url_form", clear_on_submit=False):
     test_url = st.text_input(
         "Dán URL bài đăng (chi tiết) để test",
