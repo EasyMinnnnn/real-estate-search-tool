@@ -3,16 +3,34 @@ from bs4 import BeautifulSoup
 import re
 from .utils_dom import sel, sel1, text_or_empty as _txt
 
+# 2 selector bạn cung cấp (để nguyên bản) + fallback ngắn gọn hơn
+_NAME_SEL_LONG = ("body > div.re__main > div.re__ldp.re__main-content-layout.re__ldp-extend.js__main-container "
+                  "> div.re__main-sidebar > div.box-vreaa-award.pro-agent-award.js__pa-contact-box.contact-relative "
+                  "> div > div > div.re__ldp-agent-wrap > div.re__avatar-area.js__ob-agent-info "
+                  "> div.re__agent-infor.re__agent-name > div > a")
+_NAME_SEL_SHORT = "div.re__main-sidebar .re__ldp-agent-wrap .re__avatar-area .re__agent-infor.re__agent-name a"
+
+_PHONE_SEL_LONG = ("body > div.re__main > div.re__ldp.re__main-content-layout.re__ldp-extend.js__main-container "
+                   "> div.re__main-sidebar > div.box-vreaa-award.pro-agent-award.js__pa-contact-box.contact-relative "
+                   "> div > div > div.re__ldp-agent-wrap > div.re__contact-area.js__ob-contact-info > div > span")
+_PHONE_SEL_SHORT = "div.re__main-sidebar .re__ldp-agent-wrap .re__contact-area.js__ob-contact-info > div > span"
+
+def _clean_phone(s: str) -> str:
+    # Giữ dấu + và số; bỏ ký tự khác
+    s = s or ""
+    s = re.sub(r"[^\d+]", "", s)
+    return s
+
 def parse(link: str, html_or_soup) -> dict:
-    # Chấp nhận cả string HTML hoặc đối tượng BeautifulSoup
+    # Chấp nhận string HTML hoặc BeautifulSoup
     soup = html_or_soup if hasattr(html_or_soup, "select") else BeautifulSoup(html_or_soup, "lxml")
 
+    # ===== Root =====
     root = sel1(soup, "#product-detail-web")
 
     # ===== Title =====
     title = ""
     if root:
-        # dùng sel1 để tự bỏ combinator '>' ở đầu nếu có
         title = _txt(sel1(root, "> h1"))
     if not title:
         title = _txt(soup.find("h1", class_="re__pr-title") or sel1(soup, "h1"))
@@ -61,12 +79,22 @@ def parse(link: str, html_or_soup) -> dict:
         if img:
             image = (img.get("src") or img.get("data-src") or "").strip()
 
-    # ===== Contact =====
-    name = _txt(sel1(soup, "div.re__main-sidebar .re__agent-infor.re__agent-name > a"))
-    phone = ""
-    tel = soup.find("a", href=lambda h: h and str(h).startswith("tel:"))
-    if tel:
-        phone = tel.get_text(strip=True) or tel.get("href", "").replace("tel:", "")
+    # ===== Contact (fix theo yêu cầu) =====
+    # Tên
+    name_el = sel1(soup, f"{_NAME_SEL_LONG}, {_NAME_SEL_SHORT}")
+    name = _txt(name_el)
+
+    # Số điện thoại (ưu tiên span theo selector bạn đưa)
+    phone_el = sel1(soup, f"{_PHONE_SEL_LONG}, {_PHONE_SEL_SHORT}")
+    phone = _clean_phone(_txt(phone_el))
+
+    # Fallback: thử thẻ <a href="tel:...">
+    if not phone:
+        tel = soup.find("a", href=lambda h: h and str(h).startswith("tel:"))
+        if tel:
+            phone = _clean_phone(tel.get_text(strip=True) or tel.get("href", "").replace("tel:", ""))
+
+    contact = (name + (" - " + phone if phone else "")).strip(" -")
 
     return {
         "link": link,
@@ -75,7 +103,7 @@ def parse(link: str, html_or_soup) -> dict:
         "area": area,
         "description": desc,
         "image": image,
-        "contact": (name + (" - " + phone if phone else "")).strip(" -"),
+        "contact": contact,
     }
 
 # Với site này thường gặp 403 → ưu tiên playwright
