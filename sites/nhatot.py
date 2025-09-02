@@ -58,7 +58,6 @@ _PHONE_MASK_SEL_LONG = (
     "div.c1uglbk9 > div.col-md-8.no-padding.d17dfbtj > div > div:nth-child(4) > "
     "div > div:nth-child(2) > div > div > div"
 )
-# rút gọn để cover biến thể
 _PHONE_MASK_SEL_SHORT = (
     "div.ct-detail div.col-md-8 div:nth-child(4) div > div:nth-child(2) div div div, "
     "div[class*='adBody'] div div div"
@@ -72,9 +71,9 @@ def _clean_phone(s: str) -> str:
     return re.sub(r"[^\d+]", "", s or "")
 
 def _clean_phone_mask(s: str) -> str:
-    """Giữ số, +, khoảng trắng và dấu * để không làm mất dạng '096367 ***'."""
+    """Giữ số, +, khoảng trắng và các ký tự che (* x • ●)."""
     s = s or ""
-    s = re.sub(r"[^0-9+* ]", "", s)
+    s = re.sub(r"[^0-9+*xX•● ]", "", s)
     s = re.sub(r"\s+", " ", s).strip()
     return s
 
@@ -106,16 +105,13 @@ def _search(obj: Any, keys: set[str]):
     return None
 
 def _extract_list_id(link: str, soup: BeautifulSoup) -> Optional[str]:
-    # Ưu tiên lấy từ URL: .../123456789.htm
     m = re.search(r"/(\d{6,})\.htm", link)
     if m:
         return m.group(1)
-    # Thử tìm trong HTML
     t = soup.get_text(" ", strip=True)
     m2 = re.search(r"(list_id|ad_id|adId)\D+(\d{6,})", t, flags=re.I)
     if m2:
         return m2.group(2)
-    # Thử __NEXT_DATA__
     nd = soup.find("script", id="__NEXT_DATA__")
     if nd and (obj := _json_safe(nd.string or nd.text or "")):
         v = _search(obj, {"list_id", "ad_id", "adid", "id"})
@@ -160,7 +156,6 @@ def _from_next_data(soup: BeautifulSoup) -> Dict[str, str]:
     out["description"] = _first(out.get("description"), str(_search(obj, {"body", "description", "content"}) or ""))
     out["price"] = _first(out.get("price"), str(_search(obj, {"price_string", "price"}) or ""))
     out["area"] = _first(out.get("area"), str(_search(obj, {"area", "size", "square"}) or ""))
-    # ảnh
     images = _search(obj, {"images", "image"})
     img = ""
     if isinstance(images, list) and images:
@@ -173,7 +168,6 @@ def _from_next_data(soup: BeautifulSoup) -> Dict[str, str]:
         img = images.get("full_path") or images.get("url") or ""
     if img:
         out["image"] = img
-    # seller
     name = _search(obj, {"sellername", "seller_name", "accountname", "name"})
     phone = _search(obj, {"phone", "phonenum", "phone_number"})
     if name:
@@ -183,7 +177,6 @@ def _from_next_data(soup: BeautifulSoup) -> Dict[str, str]:
     return out
 
 def _from_gateway(list_id: str) -> Dict[str, str]:
-    """Fallback: gọi API public của Chợ Tốt theo list_id."""
     out: Dict[str, str] = {}
     for ver in ("v2", "v1"):
         url = f"https://gateway.chotot.com/{ver}/public/ad-listing/{list_id}"
@@ -199,9 +192,7 @@ def _from_gateway(list_id: str) -> Dict[str, str]:
             continue
         out["title"] = _first(out.get("title"), ad.get("subject"))
         out["description"] = _first(out.get("description"), ad.get("body"))
-        # price
         out["price"] = _first(out.get("price"), ad.get("price_string"), str(ad.get("price") or ""))
-        # area
         area = ad.get("size") or ad.get("square")
         if not area:
             params = ad.get("parameters") or []
@@ -212,7 +203,6 @@ def _from_gateway(list_id: str) -> Dict[str, str]:
                         break
         if area:
             out["area"] = str(area)
-        # image(s)
         imgs = ad.get("images") or []
         img = ""
         if isinstance(imgs, list) and imgs:
@@ -223,11 +213,38 @@ def _from_gateway(list_id: str) -> Dict[str, str]:
                 img = first
         if img:
             out["image"] = img
-        # seller
         out["name"] = _first(out.get("name"), ad.get("account_name"))
         out["phone"] = _first(out.get("phone"), _clean_phone(ad.get("account_phone", "")))
         break
     return out
+
+# ---- tìm số che: cho phép khoảng trắng giữa chữ số & nhiều ký tự che ----
+_MASK_PATTERNS = [
+    r"((?:\+?84|0)\s*(?:\d\s*){5,})\s*([*xX•●]{2,})",                # 096367 *** / +84 96 3 ***
+    r"(?:SĐT|Điện thoại|Phone)\s*[:\-]?\s*((?:\+?84|0)\s*(?:\d\s*){5,})\s*([*xX•●]{2,})"
+]
+
+def _find_masked_phone_text(soup: BeautifulSoup) -> Optional[str]:
+    # Ưu tiên vùng selector chỉ định
+    for sel in (_PHONE_MASK_SEL_LONG, _PHONE_MASK_SEL_SHORT):
+        el = soup.select_one(sel)
+        if el:
+            t = _clean_phone_mask(_txt(el))
+            for pat in _MASK_PATTERNS:
+                m = re.search(pat, t)
+                if m:
+                    digits = re.sub(r"\s+", "", m.group(1))
+                    mask = re.sub(r"\s+", "", m.group(2))
+                    return f"{digits} {mask}"
+    # Nếu không thấy, quét toàn trang
+    t_all = _clean_phone_mask(soup.get_text(" ", strip=True))
+    for pat in _MASK_PATTERNS:
+        m = re.search(pat, t_all)
+        if m:
+            digits = re.sub(r"\s+", "", m.group(1))
+            mask = re.sub(r"\s+", "", m.group(2))
+            return f"{digits} {mask}"
+    return None
 
 # ================== MAIN PARSER ==================
 def parse(link: str, html_or_soup) -> dict:
@@ -251,16 +268,10 @@ def parse(link: str, html_or_soup) -> dict:
     # ===== Contact =====
     name = _first(_txt(soup.select_one(_NAME_SEL_LONG)), _txt(soup.select_one(_NAME_SEL_SHORT)))
 
-    # (A) Ưu tiên số dạng che ở khu nội dung (không cần click)
-    mask_el = soup.select_one(_PHONE_MASK_SEL_LONG) or soup.select_one(_PHONE_MASK_SEL_SHORT)
-    phone = ""
-    if mask_el:
-        raw = _clean_phone_mask(_txt(mask_el))
-        # Lấy chuỗi có dạng: 0xxx... kèm dấu *
-        m = re.search(r"(?:\+?84|0)\d{2,}\s*\*+", raw)
-        phone = m.group(0) if m else raw if ("*" in raw and any(ch.isdigit() for ch in raw)) else ""
+    # (A) ưu tiên số che ở phần nội dung (không cần click)
+    phone = _find_masked_phone_text(soup) or ""
 
-    # (B) Nếu chưa có, thử span trong nút/anchor tel:
+    # (B) nếu chưa có, thử span trong nút/anchor tel:
     if not phone:
         phone = _clean_phone(_first(
             _txt(soup.select_one(_PHONE_BTN_LONG)),
@@ -271,7 +282,7 @@ def parse(link: str, html_or_soup) -> dict:
         if tel:
             phone = _clean_phone(tel.get_text(strip=True) or tel.get("href", "").replace("tel:", ""))
 
-    # (C) Fallback regex toàn trang (khi số lộ dạng text)
+    # (C) fallback regex toàn trang cho số đầy đủ
     if not phone:
         m = re.search(r"(?:\+?84|0)\d{8,11}", soup.get_text(" ", strip=True))
         if m:
@@ -292,11 +303,10 @@ def parse(link: str, html_or_soup) -> dict:
     desc  = _first(desc,  nd.get("description"))
     image = _first(image, nd.get("image"))
     name  = _first(name,  nd.get("name"))
-    # giữ phone nếu đã có mask, nếu chưa thì mượn từ ND
     if not phone:
         phone = _first(phone, nd.get("phone"))
 
-    # 4) Fallback API gateway nếu vẫn thiếu trường chính
+    # 4) Gateway nếu thiếu các trường chính
     if not title or not price or not desc or not image:
         list_id = _extract_list_id(link, soup)
         if list_id:
@@ -310,7 +320,6 @@ def parse(link: str, html_or_soup) -> dict:
             if not phone:
                 phone = _first(phone, gd.get("phone"))
 
-    # Fallback dò area từ toàn trang
     if not area:
         m = re.search(r"(\d[\d\.,]*)\s*m(?:2|²)\b", soup.get_text(" ", strip=True), re.I)
         if m:
