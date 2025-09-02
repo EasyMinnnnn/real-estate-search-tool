@@ -131,7 +131,7 @@ def render_card(item: dict):
             if image:
                 # Ưu tiên server-side fetch để tránh bị chặn hotlink/referer
                 try:
-                    st.image(image, use_column_width=True)
+                    st.image(image, use_container_width=True)
                 except Exception:
                     st.markdown(f'<img class="card-img" src="{html.escape(image)}">', unsafe_allow_html=True)
             else:
