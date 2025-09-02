@@ -38,10 +38,19 @@ _NAME_SEL_LONG = ("#__next > div > div.container.pty-container-detail > div.ct-d
                   "> div.SellerInfo_nameBounder__Nzf1W > a > div > div.SellerInfo_flexDiv___8piT")
 _NAME_SEL_SHORT = "[class*='SellerInfo_nameBounder'] a [class*='SellerInfo_flexDiv'], [class*='SellerInfo'] a"
 
-_PHONE_SEL_LONG = ("#__next > div > div.container.pty-container-detail > div.ct-detail.ao6jgem > div > "
-                   "div.c1uglbk9 > div.col-md-8.no-padding.d17dfbtj > div > div:nth-child(4) > "
-                   "div > div:nth-child(2) > div > div > a")
-_PHONE_SEL_SHORT = "a[href^='tel:'], [class*='phone'] a, .js__phone a, .phone a"
+# ✅ Phone nằm trong nút “Hiện số” (span trong button) – theo selector bạn gửi
+_PHONE_SEL_LONG = (
+    "#__next > div > div.container.pty-container-detail > div.ct-detail.ao6jgem > div > "
+    "div.c1uglbk9 > div.col-md-4.no-padding.dtView.r1a38bue > div > div:nth-child(2) > "
+    "div.d-lg-block.d-none.r4vrt5z > div.LeadButton_wrapperLeadButtonDesktop__7S80M > "
+    "div.LeadButton_showPhoneButton__t3T08 > div > div > button > div > span"
+)
+# rút gọn: mọi showPhone button + fallback tel:
+_PHONE_SEL_SHORT = (
+    "div.LeadButton_showPhoneButton__t3T08 button span, "
+    "button[class*='showPhone'] span, "
+    "a[href^='tel:']"
+)
 
 # ---------- Helpers ----------
 def _txt(el) -> str:
@@ -222,11 +231,17 @@ def parse(link: str, html_or_soup) -> dict:
             image = (img.get("src") or img.get("data-src") or "").strip()
 
     name  = _first(_txt(soup.select_one(_NAME_SEL_LONG)), _txt(soup.select_one(_NAME_SEL_SHORT)))
+
+    # ✅ Ưu tiên lấy số từ span của nút “Hiện số” (fetchers đã click), rồi tới tel:, rồi regex
     phone = _clean_phone(_first(_txt(soup.select_one(_PHONE_SEL_LONG)), _txt(soup.select_one(_PHONE_SEL_SHORT))))
     if not phone:
         tel = soup.find("a", href=lambda h: h and str(h).startswith("tel:"))
         if tel:
             phone = _clean_phone(tel.get_text(strip=True) or tel.get("href", "").replace("tel:", ""))
+    if not phone:
+        m = re.search(r"(?:\+?84|0)\d{8,11}", soup.get_text(" ", strip=True))
+        if m:
+            phone = m.group(0)
 
     # 2) JSON-LD
     jd = _from_ld_json(soup)
