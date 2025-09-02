@@ -15,7 +15,7 @@ SITE_REGISTRY: Dict[str, Tuple[Callable, str]] = {
     ),
     "batdongsan.com.vn": (
         getattr(batdongsan, "parse"),
-        getattr(batdongsan, "DEFAULT_STRATEGY", "cloudscraper"),
+        getattr(batdongsan, "DEFAULT_STRATEGY", "playwright"),
     ),
 }
 
