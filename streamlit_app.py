@@ -207,8 +207,9 @@ st.divider()
 st.subheader("🔬 Test 1 URL (theo từng site)")
 
 def _strategy_default_for(host: str) -> str:
+    # Dự phòng nếu site chưa đăng ký trong SITE_REGISTRY
     if "batdongsan.com.vn" in host:
-        return "cloudscraper"
+        return "playwright"  # đổi sang playwright để tránh 403
     return "requests"
 
 with st.form("test_one_url_form", clear_on_submit=False):
@@ -223,7 +224,6 @@ with st.form("test_one_url_form", clear_on_submit=False):
     except Exception:
         pass
 
-    strat_default = _strategy_default_for(host) if host else "requests"
     strategy = st.selectbox(
         "Chọn strategy tải HTML",
         ["auto", "requests", "cloudscraper", "playwright"],
@@ -242,7 +242,8 @@ if submit:
             st.error("❌ Domain này chưa được hỗ trợ trong 'sites/'.")
         else:
             parser, default_strategy = picked
-            use_strategy = strat_default if strategy == "auto" else strategy
+            # Dùng default_strategy từ SITE_REGISTRY nếu user để 'auto'
+            use_strategy = default_strategy if strategy == "auto" else strategy
             st.info(f"Site: **{host or 'n/a'}**, Strategy: **{use_strategy}**")
             try:
                 with st.spinner("Đang tải HTML…"):
