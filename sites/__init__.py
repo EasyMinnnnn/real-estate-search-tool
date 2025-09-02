@@ -7,6 +7,7 @@ from typing import Callable, Tuple, Dict
 # và (không bắt buộc) hằng DEFAULT_STRATEGY = "requests" | "cloudscraper" | "playwright"
 from . import alonhadat
 from . import batdongsan
+from . import nhatot  # <-- thêm nhatot
 
 SITE_REGISTRY: Dict[str, Tuple[Callable, str]] = {
     "alonhadat.com.vn": (
@@ -16,6 +17,10 @@ SITE_REGISTRY: Dict[str, Tuple[Callable, str]] = {
     "batdongsan.com.vn": (
         getattr(batdongsan, "parse"),
         getattr(batdongsan, "DEFAULT_STRATEGY", "playwright"),
+    ),
+    "nhatot.com": (
+        getattr(nhatot, "parse"),
+        getattr(nhatot, "DEFAULT_STRATEGY", "playwright"),
     ),
 }
 
