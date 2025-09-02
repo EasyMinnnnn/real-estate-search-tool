@@ -6,6 +6,10 @@ import requests
 import streamlit as st
 from search_google import search_google
 
+# NEW: dùng fetchers + registry site để test 1 URL
+from fetchers import get_html
+from sites import pick_site
+
 # ========= Đảm bảo Playwright Chromium có sẵn (cài 1 lần) =========
 # Thử install-deps trước, rồi install chromium. Nếu lỗi -> cảnh báo và fallback requests/cache.
 try:
@@ -147,7 +151,7 @@ def render_card(item: dict):
             if link:
                 st.link_button("🔗 Xem chi tiết", link)
 
-# --- Form tìm kiếm ---
+# --- Form tìm kiếm (Google CSE) ---
 with st.form("search_form", clear_on_submit=False):
     q = st.text_input("Nhập từ khoá", st.session_state.query or "Bán nhà Quận 3, Hồ Chí Minh")
     submitted = st.form_submit_button("Tìm kiếm")
@@ -212,3 +216,62 @@ if st.session_state.query:
             "Không có kết quả. Kiểm tra lại CSE (Search the entire web), quota Custom Search JSON API, "
             "hoặc thử truy vấn hẹp hơn: `site:batdongsan.com.vn \"Bán nhà Quận 3\"`."
         )
+
+# ================== 🔬 Test 1 URL (per-site) ==================
+st.divider()
+st.subheader("🔬 Test 1 URL (theo từng site)")
+
+def _strategy_default_for(host: str) -> str:
+    if "batdongsan.com.vn" in host:
+        return "cloudscraper"  # site này hay 403 nếu dùng requests
+    return "requests"
+
+with st.form("test_one_url_form", clear_on_submit=False):
+    test_url = st.text_input(
+        "Dán URL bài đăng (chi tiết) để test",
+        "https://batdongsan.com.vn/ban-nha-rieng-duong-cao-thang-phuong-3-13/ban-goc-2-mt-q3-dt-6x14m2-gia-18-ty-tl-xd-ham-6l-pr41322979",
+    )
+    host = ""
+    try:
+        from urllib.parse import urlparse
+        host = (urlparse(test_url).netloc or "").lower()
+    except Exception:
+        pass
+
+    strat_default = _strategy_default_for(host) if host else "requests"
+    strategy = st.selectbox(
+        "Chọn strategy tải HTML",
+        ["auto", "requests", "cloudscraper", "playwright"],
+        index=0,
+        help="Nếu 403: thử cloudscraper, nếu vẫn lỗi: thử playwright."
+    )
+    show_raw = st.checkbox("Hiện HTML rút gọn (để debug)", value=False)
+    submit = st.form_submit_button("Chạy test")
+
+if submit:
+    if not test_url.strip():
+        st.warning("Nhập URL trước đã.")
+    else:
+        # lấy parser theo domain
+        picked = pick_site(test_url)
+        if not picked:
+            st.error("❌ Domain này chưa được hỗ trợ trong 'sites/'.")
+        else:
+            parser, default_strategy = picked
+            use_strategy = strat_default if strategy == "auto" else strategy
+            st.info(f"Site: **{host or 'n/a'}**, Strategy: **{use_strategy}**")
+            try:
+                with st.spinner("Đang tải HTML…"):
+                    html_text = get_html(test_url, use_strategy)
+
+                with st.spinner("Đang trích xuất…"):
+                    data = parser(test_url, html_text)
+                    data["_source"] = use_strategy
+
+                render_card(data)
+
+                if show_raw:
+                    short = html_text[:5000] + ("… (truncated)" if len(html_text) > 5000 else "")
+                    st.code(short, language="html")
+            except Exception as e:
+                st.error(f"Lỗi test: {e}. Hãy thử strategy khác (ví dụ cloudscraper/playwright).")
