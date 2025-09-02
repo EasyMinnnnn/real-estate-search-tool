@@ -9,7 +9,12 @@ from . import alonhadat
 from . import batdongsan
 from . import nhatot
 from . import muaban
-from . import i_batdongsan  # <-- thêm i-batdongsan (module dùng dấu _)
+
+# i-batdongsan: file phải đặt tên i_batdongsan.py (KHÔNG dùng dấu '-')
+try:
+    from . import i_batdongsan as _i_batdongsan
+except Exception:
+    _i_batdongsan = None  # chưa có file hoặc lỗi import -> bỏ qua domain này
 
 SITE_REGISTRY: Dict[str, Tuple[Callable, str]] = {
     "alonhadat.com.vn": (
@@ -28,11 +33,14 @@ SITE_REGISTRY: Dict[str, Tuple[Callable, str]] = {
         getattr(muaban, "parse"),
         getattr(muaban, "DEFAULT_STRATEGY", "playwright"),
     ),
-    "i-batdongsan.com": (
-        getattr(i_batdongsan, "parse"),
-        getattr(i_batdongsan, "DEFAULT_STRATEGY", "requests"),
-    ),
 }
+
+# Chỉ đăng ký i-batdongsan nếu import thành công
+if _i_batdongsan:
+    SITE_REGISTRY["i-batdongsan.com"] = (
+        getattr(_i_batdongsan, "parse"),
+        getattr(_i_batdongsan, "DEFAULT_STRATEGY", "requests"),
+    )
 
 def pick_site(link: str):
     """
