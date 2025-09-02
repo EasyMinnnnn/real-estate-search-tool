@@ -31,8 +31,16 @@ def fetch_playwright(url: str, timeout_ms: int = 60000, headless: bool = True) -
     from playwright.sync_api import sync_playwright
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=headless)
-        ctx = browser.new_context(user_agent=REQ_HEADERS["User-Agent"],
-                                  viewport={"width": 1366, "height": 900})
+        ctx = browser.new_context(
+            user_agent=REQ_HEADERS["User-Agent"],
+            viewport={"width": 1366, "height": 900},
+            extra_http_headers={
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "vi-VN,vi;q=0.9,en-US;q=0.8",
+            },
+        )
+        # chống detect webdriver
+        ctx.add_init_script("Object.defineProperty(navigator,'webdriver',{get:()=>undefined})")
         page = ctx.new_page()
         try:
             page.goto(url, timeout=timeout_ms, wait_until="domcontentloaded")
@@ -51,5 +59,10 @@ def get_html(url: str, strategy: str) -> str:
         headless = os.getenv("PLAYWRIGHT_HEADLESS", "1") == "1"
         return fetch_playwright(url, headless=headless)
     if strategy == "cloudscraper":
-        return fetch_cloudscraper(url)
+        try:
+            return fetch_cloudscraper(url)
+        except Exception:
+            # fallback an toàn cho các site có WAF/Cloudflare
+            headless = os.getenv("PLAYWRIGHT_HEADLESS", "1") == "1"
+            return fetch_playwright(url, headless=headless)
     return fetch_requests(url)
