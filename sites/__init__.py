@@ -9,6 +9,7 @@ from . import alonhadat
 from . import batdongsan
 from . import nhatot
 from . import muaban
+from . import guland  # <-- thêm guland.vn
 
 # i-batdongsan: file phải đặt tên i_batdongsan.py (KHÔNG dùng dấu '-')
 try:
@@ -32,6 +33,10 @@ SITE_REGISTRY: Dict[str, Tuple[Callable, str]] = {
     "muaban.net": (
         getattr(muaban, "parse"),
         getattr(muaban, "DEFAULT_STRATEGY", "playwright"),
+    ),
+    "guland.vn": (
+        getattr(guland, "parse"),
+        getattr(guland, "DEFAULT_STRATEGY", "playwright"),
     ),
 }
 
